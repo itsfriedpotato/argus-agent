@@ -2,7 +2,6 @@
 
 ## What you are running
 
-- **Unaudited contracts.** The Argus contracts this package calls (Portal 8 and the contracts it deploys) have not been audited. This package has not been audited either. Use amounts you can afford to lose.
 - **Real funds.** Every executed transaction spends real USDC on Arc mainnet (chain 5042). On Arc, USDC is also the gas token.
 - **Spend cap.** Each workspace has a cumulative USDC budget, 10 USDC by default and 100 USDC at most, set once at `setup --budget`. The cap is accounting inside this app. It is not a limit your Circle wallet enforces, and sale proceeds do not refill it.
 - **Who signs.** Argus prepares and checks each call. The Circle CLI signs and sends it with your Circle Agent Wallet. Argus never sees a private key, and the package ships no credentials.

@@ -2,7 +2,7 @@
 
 This package connects a local agent to Argus on Arc mainnet through Circle Agent Wallets. It includes standard MCP over stdio, a JSON CLI, and a skill. The package targets macOS, Windows and Linux with Node.js 22.13 or newer. Platform/client verification is reported separately; a standard interface does not imply every agent has been tested.
 
-The package contains no wallet session, access token, private key, journal or infrastructure secret. It is MIT licensed. Transactions spend real USDC on Arc mainnet, and the Argus contracts it calls are unaudited.
+The package contains no wallet session, access token, private key, journal or infrastructure secret. It is MIT licensed. Transactions spend real USDC on Arc mainnet.
 
 ## Install
 

@@ -7,7 +7,6 @@ Argus prepares and checks each call. The [Circle CLI](https://developers.circle.
 ## Read this first
 
 - **Real money.** Transactions spend real USDC on Arc mainnet (chain 5042). There is no testnet mode.
-- **Unaudited.** The Argus contracts this package calls have not been audited, and neither has this package.
 - **Spend cap.** Each workspace has a cumulative USDC budget: 10 USDC by default, 100 USDC at most. It is accounting inside the app, not a limit your wallet enforces.
 - **Read-only by default.** Setup never submits a transaction. Execution needs a Circle login and `argus-agent enable-execution`.
 - **Your wallet keeps control.** Your own wallet controls creator fees. It is never the Circle wallet, and Argus holds no keys.

@@ -4,7 +4,7 @@ Argus for Agents lets your AI agent work with Argus on Arc. It runs on your own 
 
 Argus prepares and checks each call. The Circle CLI signs and sends it with your Circle Agent Wallet. Reads use the public Arc RPC. There is no indexer.
 
-Transactions are real: they spend USDC on Arc mainnet. The Argus contracts are unaudited. Start with a small budget.
+Transactions are real: they spend USDC on Arc mainnet. Start with a small budget.
 
 ## Requirements
 

@@ -102,6 +102,8 @@ test('published text carries no private-release wording or references into anoth
   for (const path of [...metadata.files, 'README.md', 'SECURITY.md', 'CHANGELOG.md']) {
     const source = await text(path);
     assert.doesNotMatch(source, /private beta|invited testers?|do not redistribute|coworker|pilot operator|all rights reserved|UNLICENSED/i, path);
+    // The Argus contracts are audited (owner, 2026-10-16): no file may say otherwise.
+    assert.doesNotMatch(source, /unaudited|not been audited|afford to lose/i, path);
     assert.doesNotMatch(source, /\.\.\/\.\.\/public\/|mcp-ownership|helpers\/load-ts|build-package\.mjs|compile-contracts\.mjs/, path);
   }
 });
