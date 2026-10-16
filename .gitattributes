@@ -1,0 +1,2 @@
+# Tests match source text and npm hashes the executable, so every checkout keeps LF.
+* text=auto eol=lf

@@ -1,0 +1,95 @@
+{
+  "name": "@argus-world/agent",
+  "version": "0.1.0",
+  "description": "Argus project workflows for local agents, using Circle Agent Wallets on Arc.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "argus",
+    "arc",
+    "usdc",
+    "mcp",
+    "mcp-server",
+    "agent",
+    "agent-skill",
+    "circle",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itsfriedpotato/argus-agent.git"
+  },
+  "homepage": "https://github.com/itsfriedpotato/argus-agent#readme",
+  "bugs": {
+    "url": "https://github.com/itsfriedpotato/argus-agent/issues"
+  },
+  "bin": {
+    "argus-agent": "scripts/argus-agent/entry.mjs"
+  },
+  "files": [
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "docs/guide.md",
+    "docs/install.md",
+    "npm-shrinkwrap.json",
+    "scripts/argus-agent/batch.mjs",
+    "scripts/argus-agent/beta-service-client.mjs",
+    "scripts/argus-agent/beta-service.mjs",
+    "scripts/argus-agent/catalog.mjs",
+    "scripts/argus-agent/circle-executor.mjs",
+    "scripts/argus-agent/circle-hosted-executor.mjs",
+    "scripts/argus-agent/circle-sca-receipts.mjs",
+    "scripts/argus-agent/cli.mjs",
+    "scripts/argus-agent/contracts.mjs",
+    "scripts/argus-agent/entry.mjs",
+    "scripts/argus-agent/generated/abis.mjs",
+    "scripts/argus-agent/generated/addresses.mjs",
+    "scripts/argus-agent/generated/agent-chain.mjs",
+    "scripts/argus-agent/generated/manifest.json",
+    "scripts/argus-agent/generated/pool.mjs",
+    "scripts/argus-agent/generated/swap-encoding.mjs",
+    "scripts/argus-agent/generated/time-lock.mjs",
+    "scripts/argus-agent/generated/v5-launch-rules.mjs",
+    "scripts/argus-agent/generated/v5-lock.mjs",
+    "scripts/argus-agent/generated/v5-market.mjs",
+    "scripts/argus-agent/locks.mjs",
+    "scripts/argus-agent/mcp.mjs",
+    "scripts/argus-agent/mvp.mjs",
+    "scripts/argus-agent/onboarding.mjs",
+    "scripts/argus-agent/patch-circle-hosted.mjs",
+    "scripts/argus-agent/private-files.mjs",
+    "scripts/argus-agent/project-import.mjs",
+    "scripts/argus-agent/reads.mjs",
+    "scripts/argus-agent/rpc-reads.mjs",
+    "scripts/argus-agent/sdk.mjs",
+    "scripts/argus-agent/store.mjs",
+    "scripts/argus-agent/vendor/argus-v4.json",
+    "scripts/argus-agent/vendor/argus-v5-launch-example.mjs",
+    "scripts/argus-agent/vendor/intent.mjs",
+    "skills/argus-agent/SKILL.md"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "test:package": "node scripts/test-package.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.0",
+    "viem": "^2.56.3",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.3.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

@@ -1,0 +1,44 @@
+name: Publish
+
+# Publishes to npm with trusted publishing (OIDC): no npm token is stored in this
+# repository. npmjs.com must list this repository and publish.yml as the package's
+# trusted publisher.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Trusted publishing needs npm 11.5.1 or newer
+        run: npm install -g npm@11.9.0
+      - name: The tag must name the package.json version
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $version" >&2
+            exit 1
+          fi
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm install --prefix .cache/argus-agent/circle-runtime --ignore-scripts --no-audit --no-fund @circle-fin/cli@1.1.4
+      - run: node scripts/argus-agent/patch-circle-hosted.mjs
+      - run: npm test
+      - run: npm run test:package -- --offline
+      - name: Publish with provenance
+        run: npm publish --provenance --access public

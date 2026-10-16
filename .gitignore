@@ -1,0 +1,9 @@
+node_modules/
+.cache/
+*.tgz
+.env
+.env.*
+*.sqlite
+*.sqlite-*
+.argus-agent/
+npm-debug.log*

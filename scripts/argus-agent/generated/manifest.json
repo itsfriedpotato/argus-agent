@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "compiler": "typescript@5.9.3",
+  "hashTextNormalization": "LF",
+  "files": {
+    "abis.mjs": {
+      "source": "src/lib/contracts/abis.ts",
+      "sourceSha256": "bb5a2f412164f8cc11af7488074d6bcd0a93686b0bd03fcf72574dd99c591e75",
+      "sha256": "e0a77fb468bbee2ce12db5d89e230610eb03ffc72da65c8acd5c30f8b3e22ea6"
+    },
+    "addresses.mjs": {
+      "source": "src/lib/contracts/addresses.ts",
+      "sourceSha256": "14bdec036b60549be6e4fb119a7218dce193c538c792f573e3f4e1891b7bd716",
+      "sha256": "7e87693fab3037708ca264455147f5d298bf5de1bfbd26ba956ba37725bfb17a"
+    },
+    "pool.mjs": {
+      "source": "src/lib/contracts/pool.ts",
+      "sourceSha256": "631c78fa68f36d8165a9bc19b8d91a6fe198e49f7d3b89845302f6f8205bb645",
+      "sha256": "5598e40e666a449f80ca381fa59117d3f2351732636a6449e9b8f1df59638617"
+    },
+    "swap-encoding.mjs": {
+      "source": "src/lib/contracts/swap-encoding.ts",
+      "sourceSha256": "4bda7b9148fe4212f29e42aaf3bf73489a3108a5a777d728d664c9c7663af399",
+      "sha256": "ce8f0826d03ba7490fe89ef1aa38004ade847ca82f1b2db1278db559cb7c8cb0"
+    },
+    "time-lock.mjs": {
+      "source": "src/lib/contracts/time-lock.ts",
+      "sourceSha256": "d099062570c49b02be81bdbf99418e534068cbcb9e8f263d89cd899eda91c266",
+      "sha256": "d412e11e4896c82a04351b22ea70f2896d757f35a3856aff3d367045733ae9ae"
+    },
+    "v5-launch-rules.mjs": {
+      "source": "src/lib/contracts/v5-launch-rules.ts",
+      "sourceSha256": "c30a9e60d46eb30191996c5cc38285c0f213958e5a0ef51634de2c922c08b295",
+      "sha256": "a1296661a6b1931b85daad28e3897fd22585835c7424d034f82e6aaa7b1af26d"
+    },
+    "v5-lock.mjs": {
+      "source": "src/lib/contracts/v5-lock.ts",
+      "sourceSha256": "127897e4641a2dfd82164ee3a8cc94194bc7bf31bb7fd3eb4fa10e409baa5536",
+      "sha256": "19b574b07db5b0406004f08b4aa5c9a5f75bc8c650f9179559c37047f9293088"
+    },
+    "v5-market.mjs": {
+      "source": "src/lib/contracts/v5-market.ts",
+      "sourceSha256": "f8e7b48cf9183ac7c57ebb2c807affb0c1851b3895d98756fd19fc6b68ed4532",
+      "sha256": "0cae6770bfd84e8d756af8d9e284af8f0ad37696aeb0ab8760f76fc3ef410362"
+    },
+    "agent-chain.mjs": {
+      "sha256": "77221d862da229a1db317b39fc2f84cce8389ef2dbfec9fda80b30686566210f"
+    }
+  }
+}
