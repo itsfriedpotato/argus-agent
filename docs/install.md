@@ -9,7 +9,7 @@ Transactions are real: they spend USDC on Arc mainnet. Start with a small budget
 ## Requirements
 
 - Node.js 22.13 or newer on macOS, Windows or Linux. Check with `node --version`.
-- Your own wallet. It controls creator fees. It is never the Circle wallet.
+- Your own wallet. It controls creator fees for new V2 launches and must differ from the Circle wallet. Imported tokens retain their existing onchain recipients and authority.
 - To execute: a Circle account with an Agent Wallet on Arc, funded with USDC. Argus installs the pinned Circle CLI for you.
 
 Setup needs your Circle wallet address, so connect Circle first. After setup, reads need no Circle session and sign nothing.
@@ -161,7 +161,7 @@ These tools work right after setup, before `enable-execution`. They need no acti
 | `argus_export_projects` | Portable project references |
 | `argus_get_action` | A saved action and its status |
 
-Token reads cover Portal 8 launches. Older tokens return `UNSUPPORTED`.
+Token reads cover V2 (Portal 8) and existing V1 tokens from the supported Portals 1–7. New launches remain V2 only. V1 trading supports direct ERC20 USDC pairs, and supported fee claims pay the existing immutable recipients. Portal 3–4 claims require the configured Circle wallet to be the fee recipient. Both versions can use the currently supported lock deployments. V1 payout-split edits and controller rotation are unsupported. See the [version and management limits](guide.md#token-versions-and-management) for the different V1 fee models.
 
 ```sh
 argus-agent tools
@@ -187,7 +187,7 @@ This works once `doctor` shows the Circle wallet ready. Ask your agent to prepar
 
 ## Safety model
 
-- Your own wallet controls creator fees. Setup refuses the Circle wallet as controller.
+- Your own wallet controls creator fees for new V2 launches. Setup refuses the Circle wallet as controller. Importing an existing token does not change its onchain authority or fee recipients.
 - Argus prepares and checks every call. Circle signs and sends it. Argus holds no keys.
 - Setup starts read-only. Execution needs a Circle login and `enable-execution`.
 - The budget caps total USDC spend. It is app accounting, not a wallet limit.

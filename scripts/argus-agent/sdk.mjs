@@ -5,6 +5,7 @@ import { isAbsolute, join } from 'node:path';
 import { createPublicClient, createWalletClient, decodeEventLog, getAddress, http, keccak256, parseAbi, parseUnits, recoverTransactionAddress, serializeTransaction } from 'viem';
 import { catalog, validateOperation } from './catalog.mjs';
 import { createContractAdapter } from './contracts.mjs';
+import { verifyLegacyClaimReceipt } from './legacy-receipts.mjs';
 import { buildAtomicBatch } from './batch.mjs';
 import { createReadOperations } from './reads.mjs';
 import { pacedReads } from './rpc-reads.mjs';
@@ -181,6 +182,8 @@ export async function createArgusAgent(config, dependencies = {}) {
       knownProject(args.token);
       if (name === 'argus_prepare_management' && args.operation !== 'claim_fees') {
         const current = await contracts.readProject(args.token);
+        if (current.capabilities?.management && !current.capabilities.management.includes(args.operation))
+          fail('UNSUPPORTED', 'This token has a fixed creator-fee recipient. Its contract does not support fee splits or payout-controller rotation.');
         const requiredSigner = args.operation === 'accept_owner' ? current.proposed : current.controller;
         return { status: 'needs_human_signature', management: projectManagementLink(args.token, requiredSigner, args.operation), coverage: { ...coverage } };
       }
@@ -221,7 +224,10 @@ export async function createArgusAgent(config, dependencies = {}) {
       } else {
         kind = 'management';
         const current = await contracts.readProject(args.token);
-        actor = args.operation === 'claim_fees' ? roles.operator : args.operation === 'accept_owner' ? current.proposed : current.controller;
+        const recipientOnlyClaim = args.operation === 'claim_fees' && current.version === 'v1' && current.fees?.claimPermission === 'recipient_only';
+        actor = args.operation === 'claim_fees' && !recipientOnlyClaim ? roles.operator : args.operation === 'accept_owner' ? current.proposed : current.controller;
+        if (mainnet && recipientOnlyClaim && !same(actor, roles.operator))
+          fail('ARGUS_MANUAL_SIGNER_UNAVAILABLE', `This V1 fee claim must be signed by its recorded recipient (${actor}). The configured Circle wallet is different.`);
         if (mainnet && !same(actor, roles.operator)) fail('ARGUS_MANUAL_SIGNER_UNAVAILABLE', 'This action requires the human payout controller. Its manual signing route is not available through hosted Circle execution.');
         if (!Object.values(roles).some(address => same(actor, address))) fail('ARGUS_SIGNER_UNAVAILABLE', 'The current required controller is not a configured local signer.');
         plan = await contracts.prepareManagement({ ...args, actor });
@@ -340,6 +346,10 @@ export async function createArgusAgent(config, dependencies = {}) {
         Object.assign(evidence, plain({ tokenAddress: expected.token, deployment: expected.deployment, lockId: event.id, walletReceivedAmountRaw: received }));
       } else fail('ARGUS_RECEIPT_MISMATCH', 'The lock operation is not supported.');
       evidence.operation = expected.operation;
+    } else if (action.kind === 'management' && expected.version === 'v1') {
+      if (expected.operation !== 'claim_fees') fail('UNSUPPORTED', 'V1 creator-fee ownership is immutable.');
+      Object.assign(evidence, await verifyLegacyClaimReceipt({ receipt, expected, step, read }));
+      evidence.operation = expected.operation;
     } else {
       if (expected.operation === 'set_split' || expected.operation === 'accept_owner') {
         const [recipients, bps] = await read(addresses.creatorRegistry, registryAbi, 'payoutSplit', [expected.token]);
@@ -452,7 +462,15 @@ export async function createArgusAgent(config, dependencies = {}) {
     if (action.kind === 'management') {
       const current = await contracts.readProject(action.expected.token);
       if (!same(current.controller, action.expected.controllerBefore)) fail('ARGUS_TERMS_CHANGED', 'Payout control changed since this action was prepared.');
+      if (action.expected.version === 'v1' && (current.version !== 'v1' || !same(current.portal, action.expected.portal)
+        || current.portalGeneration !== action.expected.portalGeneration || current.feeModel !== action.expected.feeModel
+        || !same(current.splitter ?? current.processor, action.expected.feeContract)))
+        fail('ARGUS_TERMS_CHANGED', 'The V1 fee deployment changed since this action was prepared.');
       if (action.expected.operation === 'claim_fees') {
+        if (action.expected.version === 'v1') {
+          if (current.fees?.executionSupported !== true) fail('UNSUPPORTED', 'Creator-fee execution is unavailable for this V1 payout asset.');
+          if (!current.feeAssets?.length) fail('NOTHING_TO_CLAIM', 'No creator fees are currently claimable. No transaction was submitted.');
+        }
         const recipients = current.split.length ? current.split : [{ recipient: current.controller, bps: 10000 }];
         if (digest(recipients.map(part => ({ ...part, recipient: part.recipient.toLowerCase() }))) !== digest(action.expected.recipients.map(part => ({ ...part, recipient: part.recipient.toLowerCase() })))) fail('ARGUS_TERMS_CHANGED', 'Payout recipients changed since the claim was prepared.');
       }

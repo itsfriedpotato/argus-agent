@@ -5,7 +5,7 @@
 - **Real funds.** Every executed transaction spends real USDC on Arc mainnet (chain 5042). On Arc, USDC is also the gas token.
 - **Spend cap.** Each workspace has a cumulative USDC budget, 10 USDC by default and 100 USDC at most, set once at `setup --budget`. The cap is accounting inside this app. It is not a limit your Circle wallet enforces, and sale proceeds do not refill it.
 - **Who signs.** Argus prepares and checks each call. The Circle CLI signs and sends it with your Circle Agent Wallet. Argus never sees a private key, and the package ships no credentials.
-- **Who controls fees.** Your own wallet controls creator fees. Setup refuses to make the Circle wallet the controller.
+- **Who controls fees.** Your own wallet controls creator fees for new V2 launches. Setup refuses to make the Circle wallet the controller. Import preserves an existing token's onchain recipients and authority; V1 fee recipients are immutable and cannot be rotated by this package.
 
 ## Keep your setup safe
 

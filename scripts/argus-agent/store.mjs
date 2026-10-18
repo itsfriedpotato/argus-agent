@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { PORTALS } from "./generated/addresses.mjs";
 
 const UNIT = 10n ** 12n; // Six-decimal USDC amounts to Arc's 18-decimal gas units.
 /** The cumulative mainnet USDC cap per workspace, in six-decimal units (100 USDC). */
@@ -517,7 +518,18 @@ export function createStore(stateDir, { budgetUsdcRaw = "10000000", mode = "loca
         record.launchActionId !== undefined || !/^\d+$/.test(record.observedBlockNumber ?? "")) {
       fail("PROJECT_UNVERIFIED", "An independently verified canonical launch receipt and current role snapshot are required.");
     }
-    for (const field of ["operator", "controller", "portal", "creatorRegistry", "hook", "escrow"]) inventoryAddress(record[field], field);
+    for (const field of ["operator", "controller", "portal"]) inventoryAddress(record[field], field);
+    if (record.version === "v1") {
+      const portal = PORTALS.find(item => sameAddress(item.address, record.portal));
+      if (!portal || portal.generation !== record.portalGeneration || portal.line !== record.line
+        || record.creatorRegistry !== null || record.escrow !== null)
+        fail("PROJECT_UNVERIFIED", "A V1 project must name its supported historical deployment without V2 authority contracts.");
+      for (const field of portal.line === "legacy" ? ["processor", "pool"] : ["hook", "splitter"])
+        inventoryAddress(record[field], field);
+    } else {
+      if (record.version !== undefined && record.version !== "v2") fail("PROJECT_UNVERIFIED", "Unsupported project version.");
+      for (const field of ["creatorRegistry", "hook", "escrow"]) inventoryAddress(record[field], field);
+    }
     return transaction(() => {
       const previous = db.prepare("SELECT json FROM projects WHERE token = ? AND chain_id = ?").get(record.token.toLowerCase(), "5042");
       if (previous) {

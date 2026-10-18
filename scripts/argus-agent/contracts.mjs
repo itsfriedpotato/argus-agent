@@ -7,6 +7,7 @@ import * as market from "./generated/v5-market.mjs";
 import { ARC_ADDRESSES } from "./generated/addresses.mjs";
 import { erc20Abi, permit2Abi, stateViewAbi, universalRouterAbi } from "./generated/abis.mjs";
 import { encodeV4ExactInSwap } from "./generated/swap-encoding.mjs";
+import { legacyPortalAbi, LEGACY_PORTALS, readLegacyState, readLegacyFees, prepareLegacyClaim, prepareLegacyTrade } from "./legacy-contracts.mjs";
 
 const bundleDefault = JSON.parse(readFileSync(new URL("./vendor/argus-v4.json", import.meta.url), "utf8"));
 
@@ -80,13 +81,19 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
     const liveRegistry = await read(portal, portalAbi, "creatorRegistry");
     if (!same(liveRegistry, registry)) fail("The Portal creator registry differs from the published bundle.", "CONTRACT_MISMATCH");
     const record = await read(portal, portalAbi, "launches", [token]);
-    if (same(record[0], zeroAddress)) fail("This token was not launched by the supported Portal8.", "UNSUPPORTED");
+    if (same(record[0], zeroAddress)) {
+      const legacy = await readLegacyState(token, read);
+      if (!legacy) fail("This token was not launched by a supported Argus Portal.", "UNSUPPORTED");
+      return legacy;
+    }
     const [payout, proposed, escrow, split] = await Promise.all([
       read(registry, registryAbi, "payoutOf", [token]), read(registry, registryAbi, "proposedPayout", [token]),
       read(registry, registryAbi, "escrowOf", [token]), read(registry, registryAbi, "payoutSplit", [token]),
     ]);
     if (same(payout, zeroAddress) || !same(escrow, record[1])) fail("The creator registry and launch escrow disagree.", "CONTRACT_MISMATCH");
-    return { token, hook: record[0], escrow, payout, controller: payout, proposed: same(proposed, zeroAddress) ? null : proposed,
+    return { version: "v2", portalGeneration: 8, line: "v5", portal, feeModel: "v5_escrow",
+      capabilities: { management: ["set_split", "propose_owner", "accept_owner", "claim_fees"], trading: true, ownership: "payout_controller" },
+      token, hook: record[0], escrow, payout, controller: payout, proposed: same(proposed, zeroAddress) ? null : proposed,
       split: split[0].map((recipient, i) => ({ recipient, bps: Number(split[1][i]) })), tokenIsToken0: record[6] };
   }
 
@@ -166,7 +173,7 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
     const state = await creatorState(token, read);
     const [name, symbol, logo, owedCreatorRaw, balances] = await Promise.all([
       read(token, tokenAbi, "name"), read(token, tokenAbi, "symbol"), read(token, tokenAbi, "logo"),
-      read(state.escrow, escrowAbi, "owedCreator"), roleBalances(token, roles, block, read),
+      state.version === "v1" ? readLegacyFees(state, read) : read(state.escrow, escrowAbi, "owedCreator"), roleBalances(token, roles, block, read),
     ]);
     let metadata = null;
     let metadataStatus = "launch_block_required";
@@ -174,13 +181,24 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
       const start = BigInt(fromBlock);
       const end = toBlock === undefined ? start : BigInt(toBlock);
       if (start < 0n || end < start || end > block.number || end - start >= 10_000n) fail("Metadata reads require a known launch range of at most 10000 blocks.");
-      const logs = await client.getLogs({ address: portal, event: portalAbi.find((x) => x.type === "event" && x.name === "LaunchMetadata"),
+      const metadataPortal = state.version === "v1" ? LEGACY_PORTALS.find((item) => same(item.address, state.portal)) : null;
+      const metadataAbi = metadataPortal ? legacyPortalAbi(metadataPortal) : portalAbi;
+      const eventName = metadataPortal ? "TokenCreated" : "LaunchMetadata";
+      const logs = await client.getLogs({ address: state.portal, event: metadataAbi.find((x) => x.type === "event" && x.name === eventName),
         args: { token }, fromBlock: start, toBlock: end, strict: true });
       if (logs.length > 1) fail("Multiple launch metadata events were returned for one token.", "CONTRACT_MISMATCH");
       metadata = logs[0]?.args ?? null;
+      if (metadataPortal && metadata) {
+        const log = logs[0];
+        const poolMatches = state.line === "legacy" ? same(metadata.pool, state.pool) : same(metadata.poolId, state.poolId);
+        if (log.removed === true || !same(metadata.token, token) || !same(metadata.creator, state.historicalCreator) || !poolMatches) {
+          fail("The historical metadata event disagrees with the verified launch record.", "CONTRACT_MISMATCH");
+        }
+      }
       metadataStatus = metadata ? "confirmed_event" : "not_found_in_requested_range";
     }
-    return immutable({ ...state, name, symbol, logo, metadata, metadataStatus, owedCreatorRaw, balances, observedBlockNumber: block.number });
+    return immutable({ ...state, name, symbol, logo, metadata, metadataStatus,
+      ...(state.version === "v1" ? owedCreatorRaw : { owedCreatorRaw }), balances, observedBlockNumber: block.number });
   }
 
   async function prepareManagement(input) {
@@ -191,6 +209,10 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
     const actor = address(input.actor, "Actor");
     const { block, read } = await snapshot();
     const state = await creatorState(token, read);
+    if (state.version === "v1") {
+      if (input.operation !== "claim_fees") fail("V1 creator authority and allocations are immutable; splits and owner rotation are unsupported.", "UNSUPPORTED");
+      return immutable(prepareLegacyClaim(state, await readLegacyFees(state, read), actor, block));
+    }
     if (["set_split", "propose_owner"].includes(input.operation) && !same(actor, state.payout)) fail("Only the current payout controller can make this change.", "UNAUTHORIZED");
     let step;
     const expected = { token, actor, operation: input.operation, controllerBefore: state.payout };
@@ -234,6 +256,7 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
     if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps >= 10_000) fail("slippageBps must be between 0 and 9999.");
     const { block, read } = await snapshot();
     const state = await creatorState(token, read);
+    if (state.version === "v1") return immutable(await prepareLegacyTrade(state, { actor, side: input.side, amountIn, slippageBps }, block, read));
     const [quoteAsset, buyTaxBps, sellTaxBps, launchedAt, tokenDecimals] = await Promise.all([
       read(state.hook, hookAbi, "quoteAsset"), read(state.hook, hookAbi, "buyTaxBps"), read(state.hook, hookAbi, "sellTaxBps"),
       read(state.hook, hookAbi, "launchedAt"), read(token, erc20Abi, "decimals"),
@@ -283,7 +306,7 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
       return { token, name, symbol, balanceRaw, decimals: Number(decimals) };
     }));
     return immutable({ account: owner, usdcRaw, usdcDecimals: 6, holdings, observedBlockNumber: block.number,
-      scope: "Explicitly tracked Portal8 tokens only; not complete wallet discovery, historical PnL or USD valuation." });
+      scope: "Explicitly tracked supported Argus tokens only; not complete wallet discovery, historical PnL or USD valuation." });
   }
 
   return Object.freeze({ prepareProject, readProject, prepareManagement, prepareTrade, readPortfolio });

@@ -17,7 +17,7 @@ On every OS use your own private account directory for configuration. POSIX file
 
 ## Connect your wallets
 
-The human wallet controls creator-fee settings. The Circle wallet submits agent transactions. They must be distinct. Reuse your existing Circle wallet across agents; changing conversations must never create a replacement wallet.
+For new V2 launches, the human wallet controls creator-fee settings. The Circle wallet submits agent transactions. They must be distinct. Existing tokens retain their onchain authority and recipients when imported; V1 fee recipients cannot be changed. Reuse your existing Circle wallet across agents; changing conversations must never create a replacement wallet.
 
 ```text
 argus-agent circle-setup
@@ -45,7 +45,7 @@ argus-agent doctor
 
 Setup starts read-only and does not submit transactions. It prints the absolute configuration and MCP configuration paths. `ARGUS_AGENT_CONFIG` can select another workspace; the default is `.argus-agent/config.json` under your OS user home. Setup refuses to overwrite an existing workspace.
 
-The default treasury is your personal wallet. Agent operations involving its tokens return an Argus link for human signing. To allocate a Circle working treasury, choose `--treasury circle` during setup. That choice makes the Circle wallet custodian of those tokens. Creator-fee control remains with your personal wallet. Timed-lock beneficiary rights default to the personal wallet; permanent locks have no withdrawal.
+The default treasury is your personal wallet. Agent operations involving its tokens return an Argus link for human signing. To allocate a Circle working treasury, choose `--treasury circle` during setup. That choice makes the Circle wallet custodian of those tokens. For new V2 launches, creator-fee control remains with your personal wallet. Timed-lock beneficiary rights default to the personal wallet; permanent locks have no withdrawal.
 
 A workspace accepts a cumulative budget of up to 100 USDC; without `--budget` it is 10 USDC. This is application accounting, not a wallet-enforced total. Sponsored operation fees are conservatively included, and sale proceeds do not replenish it.
 
@@ -74,13 +74,38 @@ There are 19 core tools, with two more when the optional shared service is confi
 
 The search is local, and balance reads cover only the supplied tokens. These are not market-wide search or complete portfolio discovery. Check the returned observation block and coverage; reuse the observation block for later lock pages. Reading a lock does not recover inventory or grant permission to withdraw it. Check claim details before preparing a claim; a zero balance needs no transaction.
 
+## Token versions and management
+
+New launches use V2 (Portal 8) only. Existing V1 tokens from the supported Portals 1–7 can be read, imported and recovered through the same MCP, CLI and skill workflows.
+
+| Operation | Existing V1 tokens | V2 tokens |
+| --- | --- | --- |
+| Details, named-token balances, project import and position recovery | Supported | Supported |
+| Buys and sells | Direct ERC20 USDC pairs only | Direct ERC20 USDC pairs only |
+| Fee claims | Portals 1–2 and 5–7: permissionless; Portals 3–4: recipient must sign. Native-quote tokens on 6–7 are unsupported. | Supported when the verified fee and payout assets are USDC |
+| Payout-split edits and controller rotation | Unsupported; fee recipients are immutable | Personal-wallet signing route for supported controls |
+| Timed locks, permanent locks and eligible withdrawals | Current supported deployments | Current supported deployments |
+
+V1 claims always pay the fixed creator-fee recipient; the caller cannot choose a different destination. That recipient can differ from the historical launch sender. Portals 1–2 and 5–7 allow someone else to submit the claim for that recipient. Portals 3–4 require the recipient's signature: the MCP can execute only if its configured Circle wallet is that recipient. Otherwise it reports the unavailable signer. The current Argus browser claim route is not offered for this case. Fee models differ by portal:
+
+- Portals 1–2 normally push creator payments automatically. Claim details report any parked native USDC payment in 18-decimal units. The processor's creator bucket awaiting dispatch is separate from that claim balance.
+- Portals 3–5 keep USDC and token fee credits. The USDC credit uses 6-decimal units and pays as native USDC in 18-decimal units. Claim details normalize that amount to the native payout units; project details retain the ledger units. Token credits use 18-decimal units. Portals 3–4 normally push payments automatically; failed payments leave parked credits that only the recipient can claim. Portal 5 allows permissionless submission for the recipient.
+- Portal 6 reports credited quote-asset and token fees separately.
+- Portal 7 reports credited quote-asset fees, token fees and converted USDC as three separate balances. Converted USDC uses 6-decimal units.
+
+Use each returned asset and its exact decimals. Claim details do not estimate uncredited fees or pending conversions, and a zero claim balance does not mean no fees have been earned. Do not assume every quote or payout asset is USDC. Native-quote and other non-USDC trade pairs return `UNSUPPORTED`; the engine does not create a conversion route. This MCP does not edit V1 metadata or taxes, or change its immutable creator-fee recipients.
+
+For Portal 6–7 tokens whose quote asset is the zero address (native currency), identity, metadata and balance reads still work. Fee amounts return `null`, with reason `unsupported_native_quote`, and fee execution is unsupported. Unknown amounts must not be reported as zero. This limitation does not apply to Portals 3–5's supported ERC20 USDC quote credits paid out as native USDC.
+
+Legacy V1 trade quotes refuse amounts that cross a liquidity boundary the engine cannot quote reliably (`QUOTE_RANGE_EXCEEDED`). Try a smaller amount; do not bypass the refusal with an assumed price. Hooked V1 pools with unsupported protocol fees also return `UNSUPPORTED`.
+
 ## Recover an existing project first
 
 Ask your agent:
 
-> Import my Argus project using this confirmed launch transaction hash. Show the human fee controller, historical launch sender, current known balances and the Argus project link. Do not submit transactions.
+> Import my Argus project using this confirmed launch transaction hash. Show the token version, current fee recipients and authority, historical launch sender, current known balances and the Argus project link. Do not submit transactions.
 
-The tool is `argus_import_project` with `launchTxHash` and optional `token`. It verifies the canonical receipt and current Argus registry. A token address alone needs its launch transaction reference; the client does not scan all chain history. `argus_export_projects` returns portable public references that can be imported into a clean workspace on another computer.
+The tool is `argus_import_project` with `launchTxHash` and optional `token`. It verifies the canonical receipt against a supported portal and its current launch record. A token address alone needs its launch transaction reference; the client does not scan all chain history. Older V1 launch events do not include every branding field, so missing metadata is reported rather than invented. `argus_export_projects` returns portable public references that can be imported into a clean workspace on another computer.
 
 Importing does not grant signing authority or replay old actions. It does not recover uncertain submissions. Keep the original action journal if an operation is pending or its outcome is unknown.
 
@@ -112,7 +137,7 @@ Use `argus_cancel_action` to abandon a preparation whose remaining steps were ne
 argus-agent disable-execution
 ```
 
-Disabling retains the wallet, journal and budget. Creator-fee split or controller changes use the existing Argus browser interface and your personal wallet. The historical creator address is not the same thing as current creator-fee authority.
+Disabling retains the wallet, journal and budget. Supported V2 creator-fee split or controller changes use the existing Argus browser interface and your personal wallet. V1 rejects these changes because its fee recipients are immutable. The historical creator address is not the same thing as current creator-fee authority for a V2 project.
 
 ## Shared service
 
