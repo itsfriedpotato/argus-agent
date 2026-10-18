@@ -5,12 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, keccak256, parseAbi, parseUnits } from 'viem';
+import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, encodeFunctionData, keccak256, parseAbi, parseUnits } from 'viem';
 import { CIRCLE_BATCH_ABI } from '../scripts/argus-agent/batch.mjs';
 import { validateOperation } from '../scripts/argus-agent/catalog.mjs';
 import { createArgusAgent } from '../scripts/argus-agent/sdk.mjs';
 import { createStore } from '../scripts/argus-agent/store.mjs';
 import { CURRENT_TIME_LOCK } from '../scripts/argus-agent/locks.mjs';
+import { PORTALS } from '../scripts/argus-agent/generated/addresses.mjs';
+import { poolIdFor, poolKeyFor } from '../scripts/argus-agent/generated/pool.mjs';
+import { legacySelfClaimAbi, legacySplitterAbi } from '../scripts/argus-agent/legacy-contracts.mjs';
 
 const bundle = JSON.parse(readFileSync(new URL('../scripts/argus-agent/vendor/argus-v4.json', import.meta.url), 'utf8'));
 const addresses = bundle.portal8.addresses;
@@ -60,8 +63,8 @@ async function fixture(t, options = {}) {
     readContract: async ({ functionName, args }) => functionName === 'getLock' ? records.get(String(args[0])) : functionName === 'locked' ? vaultTotal : HUMAN,
     ...options.client,
   };
-  function plan(expected, spendUsdcRaw = '0', approve = false) {
-    const steps = Array.from({ length: typeof approve === 'number' ? approve + 1 : approve ? 2 : 1 }, () => ({ to: addresses.portal, data: `0x${(++nextCall).toString(16).padStart(8, '0')}`, value: '0', abi: [] }));
+  function plan(expected, spendUsdcRaw = '0', approve = false, calldata) {
+    const steps = Array.from({ length: typeof approve === 'number' ? approve + 1 : approve ? 2 : 1 }, () => ({ to: addresses.portal, data: calldata ?? `0x${(++nextCall).toString(16).padStart(8, '0')}`, value: '0', abi: [] }));
     const value = { steps, expected, summary: { spendUsdcRaw } };
     plans.set(steps.at(-1).data, value);
     return value;
@@ -490,4 +493,151 @@ test('previously prepared sequential trades keep their old digest and ordered st
   const result = await restarted.dispatch('argus_execute_action', { actionId: legacy.id });
   assert.equal(result.error, undefined, JSON.stringify(result)); assert.equal(result.action.status, 'confirmed');
   assert.equal(h.sends.length, 5); assert.equal(result.budget.spentWei, parseUnits('4.65', 18).toString());
+});
+
+async function v1Fixture(t, options = {}) {
+  const generation = options.generation ?? 6;
+  const creator = options.creator ?? HUMAN;
+  const recipientOnly = generation === 3 || generation === 4;
+  const portal = PORTALS.find(item => item.generation === generation);
+  const poolId = poolIdFor(poolKeyFor(TOKEN, addresses.defaultQuoteAsset, HOOK));
+  const h = await fixture(t, { mode: 'mainnet-mvp', ...options,
+    client: { readContract: async ({ functionName }) => {
+      if (functionName === 'launches') return [creator, 0, true, CURRENT_TIME_LOCK, HOOK, ESCROW, 300, 300, 1n,
+        ...(generation >= 4 ? [100] : []), ...(generation >= 6 ? [addresses.defaultQuoteAsset] : [])];
+      if (functionName === 'poolId') return poolId;
+      if (functionName === 'creator') return creator;
+      if (functionName === 'token') return TOKEN;
+      if (functionName === 'quoteAsset') return addresses.defaultQuoteAsset;
+      if (functionName === 'decimals') return 6;
+      throw new Error(`Unexpected receipt read ${functionName}`);
+    } },
+    changeReceipt: (receipt, expected) => {
+      if (expected?.operation === 'claim_fees') receipt.logs = [
+        event(ESCROW, legacySplitterAbi, 'Claimed', { to: creator, currency: addresses.defaultQuoteAsset, amount: 101n }),
+        transfer(generation <= 5 ? '0xfffffffffffffffffffffffffffffffffffffffe' : addresses.defaultQuoteAsset,
+          ESCROW, creator, generation <= 5 ? 101n * 10n ** 12n : 101n),
+      ];
+      options.changeReceipt?.(receipt, expected);
+    },
+  });
+  const current = { version: 'v1', portal: portal.address, portalGeneration: generation, line: 'hooked', feeModel: 'v4_splitter',
+    controller: creator, proposed: null, split: [], splitter: ESCROW, capabilities: { management: ['claim_fees'] },
+    fees: { executionSupported: true, claimPermission: recipientOnly ? 'recipient_only' : 'permissionless' },
+    feeAssets: [{ asset: addresses.defaultQuoteAsset, amountRaw: '101', decimals: 6, delivery: 'erc20' }] };
+  h.store.saveImportedProject({ ...current, verified: true, source: 'canonical-launch-receipt', chainId: 5042,
+    token: TOKEN, operator: creator, historicalCreator: creator, creatorRegistry: null, escrow: null, hook: HOOK,
+    launchTxHash: hash(1), launchBlock: '1', launchBlockHash: hash(1), observedBlockNumber: '100' });
+  h.contracts.readProject = async () => current;
+  h.contracts.prepareManagement = async input => {
+    const result = h.plan({ version: 'v1', portal: portal.address, portalGeneration: generation, feeModel: 'v4_splitter',
+      token: TOKEN, actor: input.actor, operation: 'claim_fees', controllerBefore: creator, feeContract: ESCROW,
+      quoteAsset: addresses.defaultQuoteAsset, recipients: [{ recipient: creator, bps: 10000 }] }, '0', false,
+    encodeFunctionData({ abi: recipientOnly ? legacySelfClaimAbi : legacySplitterAbi, functionName: 'claim', args: recipientOnly ? [] : [creator] }));
+    result.steps[0].to = ESCROW;
+    return result;
+  };
+  const originalTrade = h.contracts.prepareTrade;
+  h.contracts.prepareTrade = async input => {
+    const plan = await originalTrade(input);
+    Object.assign(plan.expected, { version: 'v1', portal: portal.address, portalGeneration: generation });
+    return plan;
+  };
+  return { ...h, current };
+}
+
+test('V1 management refuses immutable operations instead of offering a human signing route', async t => {
+  const h = await v1Fixture(t);
+  for (const operation of ['set_split', 'propose_owner', 'accept_owner']) {
+    const result = await h.agent.dispatch('argus_prepare_management', { idempotencyKey: `v1-${operation}`, token: TOKEN, operation, newController: CIRCLE });
+    assert.equal(result.error.code, 'UNSUPPORTED');
+    assert.equal(result.management, undefined);
+  }
+  assert.equal(h.sends.length, 0);
+  assert.equal(h.store.listActions().length, 0);
+});
+
+test('an imported V1 token uses atomic trades and retains inventory and budget across clients', async t => {
+  const h = await v1Fixture(t);
+  const result = await h.agent.dispatch('argus_prepare_trade', { idempotencyKey: 'v1-atomic-buy', token: TOKEN, side: 'buy', amountIn: '0.1' });
+  assert.equal(result.error, undefined, JSON.stringify(result));
+  assert.equal(result.action.expected.version, 'v1');
+  assert.equal(result.action.steps.length, 1);
+  assert.equal(result.action.steps[0].batchCalls.length, 3);
+  const confirmed = await execute(h, result.action);
+  assert.equal(confirmed.action.status, 'confirmed');
+  assert.equal(h.store.getInventory(TOKEN, CIRCLE).availableRaw, '100');
+  assert.equal(h.store.budget().spentWei, parseUnits('0.11', 18).toString());
+  const reopened = await h.connect();
+  assert.equal((await reopened.dispatch('argus_list_projects')).projects[0].version, 'v1');
+  assert.equal((await reopened.dispatch('argus_execute_action', { actionId: result.action.id })).action.status, 'confirmed');
+  assert.equal(h.sends.length, 1);
+});
+
+test('V1 creator claims verify their own splitter and actual payout without V2 registry reads', async t => {
+  const h = await v1Fixture(t);
+  const prepared = await h.agent.dispatch('argus_prepare_management', { idempotencyKey: 'v1-claim', token: TOKEN, operation: 'claim_fees' });
+  assert.equal(prepared.error, undefined, JSON.stringify(prepared));
+  const confirmed = await execute(h, prepared.action);
+  assert.equal(confirmed.error, undefined, JSON.stringify(confirmed));
+  assert.equal(confirmed.action.status, 'confirmed');
+  assert.equal(confirmed.action.steps[0].receipt.actualCreatorFeesUsdcRaw, '101');
+  assert.equal(confirmed.action.steps[0].receipt.payouts[0].recipient.toLowerCase(), HUMAN);
+  assert.equal(h.store.budget().spentWei, parseUnits('0.01', 18).toString());
+  assert.equal(h.store.getInventory(TOKEN, CIRCLE).availableRaw, '0');
+});
+
+test('a recipient-only V1 claim requires the recorded recipient rather than substituting Circle', async t => {
+  const h = await v1Fixture(t, { generation: 3 });
+  const result = await h.agent.dispatch('argus_prepare_management', { idempotencyKey: 'v1-recipient-only', token: TOKEN, operation: 'claim_fees' });
+  assert.equal(result.error.code, 'ARGUS_MANUAL_SIGNER_UNAVAILABLE');
+  assert.match(result.error.message, /recorded recipient/);
+  assert.equal(h.sends.length, 0);
+  assert.equal(h.store.listActions().length, 0);
+});
+
+test('Portal 3 and 4 claims execute only when Circle is already the recorded fee recipient', async t => {
+  for (const generation of [3, 4]) {
+    const h = await v1Fixture(t, { generation, creator: CIRCLE });
+    const prepared = await h.agent.dispatch('argus_prepare_management', { idempotencyKey: 'v1-self-claim', token: TOKEN, operation: 'claim_fees' });
+    assert.equal(prepared.error, undefined, JSON.stringify(prepared));
+    assert.equal(prepared.action.steps[0].data, '0x4e71d92d');
+    assert.equal(prepared.action.steps[0].from, CIRCLE);
+    const confirmed = await execute(h, prepared.action);
+    assert.equal(confirmed.error, undefined, JSON.stringify(confirmed));
+    assert.equal(confirmed.action.status, 'confirmed');
+    assert.equal(confirmed.action.steps[0].receipt.payouts[0].recipient.toLowerCase(), CIRCLE);
+    assert.equal(confirmed.action.steps[0].receipt.payouts[0].amountRaw, '101000000000000');
+    assert.equal(h.store.budget().spentWei, parseUnits('0.01', 18).toString());
+    assert.equal(h.sends.length, 1);
+  }
+});
+
+test('V1 claims depleted after preparation do not reserve budget or submit a transaction', async t => {
+  const h = await v1Fixture(t);
+  const prepared = await h.agent.dispatch('argus_prepare_management', { idempotencyKey: 'v1-depleted-claim', token: TOKEN, operation: 'claim_fees' });
+  assert.equal(prepared.error, undefined, JSON.stringify(prepared));
+  const budget = h.store.budget();
+  h.current.feeAssets = [];
+  const result = await execute(h, prepared.action);
+  assert.equal(result.error.code, 'NOTHING_TO_CLAIM');
+  assert.equal(h.sends.length, 0);
+  assert.equal(h.estimates.length, 0);
+  assert.deepEqual(h.store.budget(), budget);
+});
+
+test('V1 claim deployment changes are caught before sending and bad delivered amounts remain unresolved', async t => {
+  const h = await v1Fixture(t);
+  const prepared = await h.agent.dispatch('argus_prepare_management', { idempotencyKey: 'v1-claim-drift', token: TOKEN, operation: 'claim_fees' });
+  h.current.splitter = HOOK;
+  assert.equal((await execute(h, prepared.action)).error.code, 'ARGUS_TERMS_CHANGED');
+  assert.equal(h.sends.length, 0);
+  const bad = await v1Fixture(t, { changeReceipt: (receipt, expected) => {
+    if (expected?.operation === 'claim_fees') receipt.logs.pop();
+  } });
+  const request = await bad.agent.dispatch('argus_prepare_management', { idempotencyKey: 'v1-bad-claim', token: TOKEN, operation: 'claim_fees' });
+  assert.equal((await execute(bad, request.action)).error.code, 'ARGUS_RECEIPT_MISMATCH');
+  assert.equal(bad.store.getAction(request.action.id).steps[0].status, 'unknown');
+  assert.equal((await execute(bad, request.action)).error.code, 'ARGUS_RECEIPT_MISMATCH');
+  assert.equal(bad.sends.length, 1);
 });

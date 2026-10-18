@@ -50,6 +50,30 @@ export function createReadOperations({ client, store, roles = {} }) {
     return { quoteAsset, payoutAsset, decimals, symbol };
   }
 
+  async function legacyFeeAssets(project, readContract) {
+    const fees = project.fees;
+    if (!fees.executionSupported) return [];
+    const native = project.portalGeneration <= 5;
+    const buckets = fees.model === 'v4_splitter' ? [
+      { kind: 'quote', asset: native ? zeroAddress : fees.quoteAsset, decimals: native ? 18 : fees.quoteDecimals,
+        amountRaw: native ? BigInt(fees.claimableQuoteRaw) * 10n ** 12n : fees.claimableQuoteRaw, delivery: native ? 'native' : 'erc20' },
+      { kind: 'token', asset: project.token, decimals: fees.tokenDecimals, amountRaw: fees.claimableTokenRaw, delivery: 'erc20' },
+      ...(project.portalGeneration === 7 ? [{ kind: 'converted_usdc', asset: usdc, decimals: 6, amountRaw: fees.claimableUsdcRaw, delivery: 'erc20' }] : []),
+    ] : fees.model === 'legacy_processor'
+      ? [{ kind: 'parked_creator', asset: zeroAddress, decimals: 18, amountRaw: fees.claimableNativeRaw, delivery: 'native' }]
+      : project.feeAssets ?? [];
+    return Promise.all(buckets.map(async fee => {
+      const asset = getAddress(fee.asset);
+      const raw = BigInt(fee.amountRaw);
+      const [rawDecimals, symbol] = fee.delivery === 'native' ? [18, 'USDC'] : await Promise.all(['decimals', 'symbol'].map(functionName =>
+        readContract({ address: asset, abi: erc20Abi, functionName })));
+      const decimals = Number(rawDecimals);
+      if (raw < 0n || !Number.isInteger(decimals) || decimals < 0 || decimals > 255 || decimals !== Number(fee.decimals) || typeof symbol !== 'string')
+        fail('ARGUS_TOKEN_UNITS_INVALID', 'The V1 creator-fee asset units could not be verified.');
+      return { ...(fee.kind ? { kind: fee.kind } : {}), asset, delivery: fee.delivery, currency: symbol, ...amount(raw, decimals) };
+    }));
+  }
+
   function lockRecord(id, value, block) {
     if (!value || same(value.token, zeroAddress) || same(value.owner, zeroAddress) || typeof value.amount !== 'bigint' || value.amount <= 0n)
       fail('ARGUS_LOCK_NOT_FOUND', 'No recorded lock exists for this ID in the supported deployment.');
@@ -84,6 +108,12 @@ export function createReadOperations({ client, store, roles = {} }) {
       const project = await contracts.readProject(args.token, { roles, ...(fromBlock === undefined ? {} : { fromBlock }) });
       const decimals = Number(await readContract({ address: getAddress(args.token), abi: erc20Abi, functionName: 'decimals' }));
       if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) fail('ARGUS_TOKEN_UNITS_INVALID', 'Token decimals could not be verified.');
+      if (project.version === 'v1') {
+        const assets = await legacyFeeAssets(project, readContract);
+        return view.finish({ project, units: { tokenDecimals: decimals, usdcDecimals: 6, roleBalanceUsdcAsset: usdc,
+          creatorFees: { ...project.fees, assets }, owedCreatorUnit: null } },
+        'One supported V1 token and configured role balances. Creator-fee assets are reported separately in their actual units. Metadata is read only from a supplied or saved exact launch block.');
+      }
       const fees = await feeAssets(project, readContract);
       return view.finish({ project, units: { tokenDecimals: decimals, usdcDecimals: 6, roleBalanceUsdcAsset: usdc,
         creatorFees: fees, owedCreatorUnit: 'quote-asset-base-units' } },
@@ -91,6 +121,25 @@ export function createReadOperations({ client, store, roles = {} }) {
     }
     if (name === 'argus_get_claim_details') {
       const project = await contracts.readProject(args.token);
+      if (project.version === 'v1') {
+        const assets = await legacyFeeAssets(project, readContract);
+        const supported = project.fees.executionSupported;
+        const canClaim = assets.some(asset => BigInt(asset.raw) > 0n);
+        const recipientOnly = project.fees.claimPermission === 'recipient_only';
+        const requiredSigner = project.fees.requiredSigner ?? null;
+        const agentExecutionSupported = supported && typeof roles.operator === 'string' && (!recipientOnly || same(roles.operator, requiredSigner));
+        return view.finish({ claim: { token: project.token, version: 'v1', portalGeneration: project.portalGeneration,
+          feeModel: project.fees.model, escrow: null, splitter: project.splitter, processor: project.processor ?? null, controller: project.controller,
+          claimableAssets: supported ? assets : null, canClaim,
+          amountKind: supported ? project.portalGeneration <= 4 ? 'parked-creator-fees' : 'credited-fees' : 'unavailable',
+          executionSupported: supported, agentExecutionSupported, claimPermission: project.fees.claimPermission, requiredSigner,
+          reason: supported ? canClaim ? 'fees_available' : 'nothing_to_claim' : project.fees.reason,
+          recipients: [{ recipient: project.fees.recipient, bps: 10000 }], capabilities: project.capabilities,
+          permission: !supported ? 'This token\'s fee delivery path is unsupported; no claim amount or signer eligibility is inferred.'
+            : recipientOnly ? 'Only the immutable V1 creator-fee recipient can sign this claim for parked fees. canClaim indicates available fees; agentExecutionSupported identifies whether the configured operator is that recipient. A read does not prepare a transaction.'
+              : 'Permissionless delivery of credited fees to the immutable V1 creator recipient. A read does not reserve fees or prepare a transaction.' } },
+        'Current claimable V1 creator fees only, separated by asset and delivery method. Undistributed fees, pending conversions, claim history and holder rewards are not inferred.');
+      }
       const owed = BigInt(project.owedCreatorRaw);
       const fees = await feeAssets(project, readContract);
       return view.finish({ claim: { token: project.token, escrow: project.escrow, controller: project.controller,
@@ -106,7 +155,7 @@ export function createReadOperations({ client, store, roles = {} }) {
       const portfolio = await contracts.readPortfolio(args);
       return view.finish({ portfolio: { ...portfolio, usdc: amount(portfolio.usdcRaw, 6),
         holdings: portfolio.holdings.map(holding => ({ ...holding, balance: amount(holding.balanceRaw, holding.decimals) })) } },
-      'USDC and explicitly supplied supported Portal8 tokens only; no complete wallet discovery, prices or PnL.');
+      'USDC and explicitly supplied supported V1 or V2 tokens only; no complete wallet discovery, prices or PnL.');
     }
     const code = await client.getCode({ address: CURRENT_TIME_LOCK, blockNumber: block.number });
     if (!code || code === '0x') fail('ARGUS_LOCK_DEPLOYMENT_MISSING', 'The supported time-lock deployment has no contract code at the observed block.');

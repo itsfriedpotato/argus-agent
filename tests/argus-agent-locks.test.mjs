@@ -5,6 +5,8 @@ import { decodeFunctionData, getAddress, zeroAddress } from "viem";
 import { createLockAdapter, CURRENT_TIME_LOCK } from "../scripts/argus-agent/locks.mjs";
 // The runtime's compiled helper; the package test keeps it equal to the app's time-lock source.
 import { MAX_LOCK_SECONDS } from "../scripts/argus-agent/generated/time-lock.mjs";
+import { ARC_ADDRESSES, PORTALS } from "../scripts/argus-agent/generated/addresses.mjs";
+import { poolIdFor, poolKeyFor, v3PoolAddress } from "../scripts/argus-agent/generated/pool.mjs";
 
 const bundle = JSON.parse(readFileSync(new URL("../scripts/argus-agent/vendor/argus-v4.json", import.meta.url), "utf8"));
 const VAULT = getAddress(bundle.portal8.addresses.lockVault);
@@ -34,6 +36,21 @@ function fixture(overrides = {}, lock = {}) {
     },
   };
   return { client, calls, adapter: createLockAdapter(client, deployment) };
+}
+
+function v1Fixture(generation, overrides = {}) {
+  const portal = PORTALS.find(item => item.generation === generation);
+  const splitter = getAddress("0x7777777777777777777777777777777777777777");
+  const tokenIsToken0 = BigInt(TOKEN) < BigInt(ARC_ADDRESSES.usdc);
+  const pool = v3PoolAddress(TOKEN, ARC_ADDRESSES.usdc, 10_000);
+  const poolId = poolIdFor(poolKeyFor(TOKEN, ARC_ADDRESSES.usdc, HOOK));
+  return { portal, ...fixture({
+    launches: request => request.address.toLowerCase() !== portal.address.toLowerCase() ? [zeroAddress]
+      : generation <= 2 ? [B, -1, 1, tokenIsToken0, false, pool, splitter, zeroAddress, A, 1n]
+      : [B, -1, tokenIsToken0, A, HOOK, splitter, 300, 400, 1n, ...(generation >= 4 ? [1] : []), ...(generation >= 6 ? [ARC_ADDRESSES.usdc] : [])],
+    config: [300n, 400n, 10_000n, 0n, 0n, B, 0n, 0n], currentTaxes: [300n, 400n], taxProcessor: splitter,
+    creatorWallet: B, token: TOKEN, creator: B, quoteAsset: ARC_ADDRESSES.usdc, poolId, ...overrides,
+  }) };
 }
 
 test("time-lock calldata binds token, amount, beneficiary and deployment without predicting receipt credit", async () => {
@@ -170,4 +187,50 @@ test("permanent lock calls lock rather than transfer and offers no withdrawal fi
   assert.ok(calls.some((request) => request.functionName === "lockVault" && request.address === getAddress(bundle.launchPortal)));
   assert.ok(calls.every((request) => request.blockNumber === 900n));
   assert.match(plan.summary.note, /irreversible/);
+});
+
+test("all V1 generations use current lock deployments and bind custody to the actual actor and beneficiary", async () => {
+  for (let generation = 1; generation <= 7; generation++) {
+    for (const method of ["prepareTimeLock", "preparePermanentLock"]) {
+      const { adapter, calls, portal } = v1Fixture(generation);
+      const plan = await adapter[method](input());
+      const timed = method === "prepareTimeLock";
+      const target = timed ? CURRENT_TIME_LOCK : VAULT;
+      assert.deepEqual(decode(plan.steps[0]), { functionName: "approve", args: [target, 100n] });
+      assert.deepEqual(decode(plan.steps.at(-1)), { functionName: "lock", args: timed ? [TOKEN, 100n, 1300n, B] : [TOKEN, 100n] });
+      assert.equal(plan.steps.at(-1).to, target);
+      assert.equal(plan.expected.actor, A);
+      assert.equal(plan.expected.token, TOKEN);
+      assert.equal(plan.expected.deployment, target);
+      assert.equal(plan.expected.amountRaw, "100");
+      if (timed) assert.equal(plan.expected.owner, B);
+      else assert.equal(plan.expected.withdrawSupported, false);
+      assert.ok(calls.every(call => call.blockNumber === 900n));
+      assert.ok(calls.some(call => call.functionName === "launches" && call.address.toLowerCase() === portal.address.toLowerCase()));
+      assert.deepEqual(calls.find(call => call.functionName === "balanceOf").args, [A]);
+      assert.deepEqual(calls.find(call => call.functionName === "allowance").args, [A, target]);
+      assert.ok(plan.steps.every(step => step.value === "0"));
+    }
+  }
+});
+
+test("V1 lock membership and funding failures propagate without preparing a deposit", async () => {
+  for (const method of ["prepareTimeLock", "preparePermanentLock"]) {
+    await assert.rejects(v1Fixture(7, { creator: A }).adapter[method](input()), { code: "CONTRACT_MISMATCH" });
+    await assert.rejects(v1Fixture(7, { creator: new Error("V1 RPC unavailable") }).adapter[method](input()), /V1 RPC unavailable/);
+    await assert.rejects(v1Fixture(1, { taxProcessor: B }).adapter[method](input()), { code: "CONTRACT_MISMATCH" });
+    await assert.rejects(v1Fixture(1, { balanceOf: 99n }).adapter[method](input()), { code: "INSUFFICIENT_BALANCE" });
+    await assert.rejects(v1Fixture(7, { launches: [zeroAddress] }).adapter[method](input()), { code: "UNSUPPORTED" });
+  }
+});
+
+test("V1 creator-fee authority does not grant withdrawal rights over another wallet's current lock", async () => {
+  for (const generation of [1, 3, 7]) {
+    const { adapter } = v1Fixture(generation);
+    const plan = await adapter.prepareWithdraw(withdrawal());
+    assert.equal(plan.expected.owner, A);
+    assert.equal(plan.expected.recipient, A);
+    assert.deepEqual(decode(plan.steps[0]), { functionName: "withdraw", args: [7n] });
+    await assert.rejects(adapter.prepareWithdraw(withdrawal({ actor: B })), { code: "UNAUTHORIZED" });
+  }
 });

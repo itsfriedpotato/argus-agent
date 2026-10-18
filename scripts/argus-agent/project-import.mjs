@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { decodeEventLog, getAddress, zeroAddress } from 'viem';
+import { LEGACY_PORTALS, legacyPortalAbi, readLegacyState } from './legacy-contracts.mjs';
 
 const bundle = JSON.parse(readFileSync(new URL('./vendor/argus-v4.json', import.meta.url), 'utf8')).portal8;
 const addresses = bundle.addresses;
@@ -13,6 +14,43 @@ const hash = value => /^0x[\da-f]{64}$/i.test(value ?? '');
 const events = (receipt, name) => receipt.logs.filter(log => same(log.address, addresses.portal) && !log.removed).flatMap(log => {
   try { const event = decodeEventLog({ abi: portalAbi, data: log.data, topics: log.topics, strict: true }); return event.eventName === name ? [event.args] : []; } catch { return []; }
 });
+const legacyEvents = receipt => receipt.logs.filter(log => !log.removed).flatMap(log => {
+  const portal = LEGACY_PORTALS.find(item => same(item.address, log.address));
+  if (!portal) return [];
+  try {
+    const event = decodeEventLog({ abi: legacyPortalAbi(portal), data: log.data, topics: log.topics, strict: true });
+    return event.eventName === 'TokenCreated' ? [{ portal, ...event.args }] : [];
+  } catch { return []; }
+});
+
+async function verifyLegacyImport(client, receipt, launch, launchTxHash) {
+  const token = getAddress(launch.token);
+  if (same(token, zeroAddress) || same(launch.creator, zeroAddress) || receipt.blockNumber < launch.portal.deployBlock)
+    fail('The receipt does not identify a valid supported V1 launch.');
+  const observed = await client.getBlock({ blockTag: 'latest' });
+  if (typeof observed.number !== 'bigint' || observed.number < receipt.blockNumber || !hash(observed.hash)) fail('A current canonical snapshot is required.');
+  const read = (address, abi, functionName, args = []) => client.readContract({ address, abi, functionName, args, blockNumber: observed.number });
+  const state = await readLegacyState(token, read, { portal: launch.portal });
+  if (!state || !same(state.historicalCreator, launch.creator) || !same(state.portal, launch.portal.address) ||
+    (state.line === 'legacy' ? !same(state.pool, launch.pool) : !same(state.poolId, launch.poolId)))
+    fail('The V1 Portal launch state does not match its canonical event.');
+  const [name, symbol] = await Promise.all([read(token, tokenAbi, 'name'), read(token, tokenAbi, 'symbol')]);
+  if (name !== launch.name || symbol !== launch.symbol) fail('The V1 token identity does not match its canonical event.');
+  const [finalLaunchBlock, finalObservedBlock] = await Promise.all([
+    client.getBlock({ blockNumber: receipt.blockNumber }), client.getBlock({ blockNumber: observed.number }),
+  ]);
+  if (!same(finalLaunchBlock.hash, receipt.blockHash) || !same(finalObservedBlock.hash, observed.hash)) fail('Chain observations changed during recovery. Retry the same import.');
+  const brandMetadata = Object.fromEntries(['imageURI', 'website', 'twitter', 'telegram'].map(field => [field, launch[field]]));
+  return plain({ ...state, verified: true, source: 'canonical-launch-receipt', chainId: 5042, token,
+    launchTxHash: launchTxHash.toLowerCase(), launchBlock: receipt.blockNumber, launchBlockHash: receipt.blockHash,
+    creatorRegistry: null, operator: getAddress(launch.creator), historicalCreator: getAddress(launch.creator),
+    controller: getAddress(state.controller), proposedController: null, treasury: null,
+    custodyStatus: 'Current holdings and original opening-buy recipients are not inferred from a project reference.',
+    brand: { name, symbol, ...brandMetadata, description: null },
+    observedBlockNumber: observed.number, observedBlockHash: observed.hash,
+    projectUrl: projectManagementLink(token, state.controller).url,
+    authorityNote: 'V1 creator fees belong to the immutable recipient recorded by the deployed contracts. Controller identifies that recipient, not transferable ownership or token admin rights. Import grants neither signing authority nor spendable inventory.' });
+}
 
 export function projectManagementLink(token, requiredSigner, operation = 'manage_creator_fees', { lockId } = {}) {
   const projectUrl = `https://argus.world/token/${getAddress(token)}`;
@@ -35,9 +73,10 @@ export async function verifyProjectImport(client, { launchTxHash, token: request
   if (receipt.status !== 'success' || !same(receipt.transactionHash, launchTxHash) || !hash(receipt.blockHash) || typeof receipt.blockNumber !== 'bigint') fail('The launch receipt must be successful and mined.');
   const canonical = await client.getBlock({ blockNumber: receipt.blockNumber });
   if (!same(canonical.hash, receipt.blockHash) || canonical.number !== receipt.blockNumber) fail('The launch receipt does not belong to the canonical block.');
-  const launched = events(receipt, 'Launched').filter(event => !requestedToken || same(event.token, requestedToken));
-  if (launched.length !== 1) fail('Select one supported Portal8 launch token from this receipt.');
+  const launched = [...events(receipt, 'Launched'), ...legacyEvents(receipt)].filter(event => !requestedToken || same(event.token, requestedToken));
+  if (launched.length !== 1) fail('Select one supported V1 or V2 launch token from this receipt.');
   const launch = launched[0];
+  if (launch.portal) return verifyLegacyImport(client, receipt, launch, launchTxHash);
   const token = getAddress(launch.token);
   if (same(token, zeroAddress) || same(launch.creator, zeroAddress)) fail('The receipt does not identify a valid launch.');
   const metadata = events(receipt, 'LaunchMetadata').filter(event => same(event.token, token));
@@ -88,7 +127,11 @@ export async function verifyPositionRecovery(client, { token: inputToken, actor:
   if (typeof block.number !== 'bigint' || !hash(block.hash)) fail('A canonical position snapshot is required.');
   const read = (address, abi, functionName, args) => client.readContract({ address, abi, functionName, args, blockNumber: block.number });
   const launch = await read(addresses.portal, portalAbi, 'launches', [token]);
-  if (!launch?.[0] || same(launch[0], zeroAddress)) fail('Only a supported Portal8 token can be recovered.');
+  let legacy;
+  if (!launch?.[0] || same(launch[0], zeroAddress)) {
+    legacy = await readLegacyState(token, read);
+    if (!legacy) fail('Only a supported V1 or V2 token can be recovered.');
+  }
   const balance = await read(token, tokenAbi, 'balanceOf', [actor]);
   if (typeof balance !== 'bigint' || balance < 0n) fail('The token balance could not be verified.');
   let lock;
@@ -103,6 +146,7 @@ export async function verifyPositionRecovery(client, { token: inputToken, actor:
   const final = await client.getBlock({ blockNumber: block.number });
   if (!same(final.hash, block.hash)) fail('The position snapshot changed during recovery. Retry the same read.');
   return plain({ verified: true, source: 'canonical-position-snapshot', chainId: 5042, token, actor,
+    version: legacy ? 'v1' : 'v2', portal: legacy?.portal ?? addresses.portal,
     balanceRaw: balance, observedBlockNumber: block.number, observedBlockHash: block.hash, ...(lock ? { lock } : {}),
     scope: 'This is current token inventory, not a launch replay, full history, profit calculation or a new USDC spending allowance.' });
 }

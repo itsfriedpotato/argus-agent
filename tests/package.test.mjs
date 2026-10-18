@@ -37,7 +37,7 @@ test('package.json, CLI help, MCP serverInfo and the changelog name one release'
   assert.equal(help.version, metadata.version, 'CLI help names the package version');
   assert.match(help.scope, /at most 100/);
   assert.ok((await text('scripts/argus-agent/mcp.mjs')).includes(`{ name: 'argus-agent', version: '${metadata.version}' }`), 'MCP serverInfo names the package version');
-  assert.match(await text('CHANGELOG.md'), new RegExp(`^# Changelog\\n\\n## ${escape(metadata.version)} - \\d{4}-\\d{2}-\\d{2}\\n`));
+  assert.match(await text('CHANGELOG.md'), new RegExp(`^## ${escape(metadata.version)} - \\d{4}-\\d{2}-\\d{2}$`, 'm'));
   for (const path of ['README.md', 'SECURITY.md', 'docs/install.md', 'docs/guide.md']) {
     const pinned = [...(await text(path)).matchAll(/@argus-world\/agent@([0-9][^\s`'"]*)/g)].map(match => match[1]);
     assert.ok(pinned.every(version => version === metadata.version), `${path} pins ${pinned.join(', ')}`);

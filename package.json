@@ -53,6 +53,8 @@
     "scripts/argus-agent/generated/v5-lock.mjs",
     "scripts/argus-agent/generated/v5-market.mjs",
     "scripts/argus-agent/locks.mjs",
+    "scripts/argus-agent/legacy-contracts.mjs",
+    "scripts/argus-agent/legacy-receipts.mjs",
     "scripts/argus-agent/mcp.mjs",
     "scripts/argus-agent/mvp.mjs",
     "scripts/argus-agent/onboarding.mjs",

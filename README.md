@@ -9,7 +9,7 @@ Argus prepares and checks each call. The [Circle CLI](https://developers.circle.
 - **Real money.** Transactions spend real USDC on Arc mainnet (chain 5042). There is no testnet mode.
 - **Spend cap.** Each workspace has a cumulative USDC budget: 10 USDC by default, 100 USDC at most. It is accounting inside the app, not a limit your wallet enforces.
 - **Read-only by default.** Setup never submits a transaction. Execution needs a Circle login and `argus-agent enable-execution`.
-- **Your wallet keeps control.** Your own wallet controls creator fees. It is never the Circle wallet, and Argus holds no keys.
+- **Your wallet keeps control of new launches.** Your own wallet controls creator fees for new V2 launches. It is never the Circle wallet, and Argus holds no keys. Importing an existing token preserves its onchain fee recipients and authority.
 
 See [SECURITY.md](SECURITY.md) before you fund a wallet.
 
@@ -65,7 +65,11 @@ Setup also writes an `mcp.json` with the exact paths for other MCP clients, and 
 
 ## Scope and limits
 
-- Token reads and actions cover tokens launched on Argus Portal 8. Older tokens answer `UNSUPPORTED`. That includes the ARGUS token itself.
+- New launches use V2 (Portal 8) only. Existing V1 tokens from the supported Portals 1–7 can be read, imported and recovered.
+- V1 and V2 trades support direct ERC20 USDC pairs. Native-quote and other quote pairs return `UNSUPPORTED`; the package does not add a conversion route.
+- V1 fee recipients are immutable. Portals 1–2 support permissionless claims of parked creator payments; Portals 5–7 support permissionless claims of credited splitter fees. Portal 3–4 claims require the fee recipient to sign, so this MCP can execute them only when the configured Circle wallet is that recipient. Amounts are reported separately for each asset. V1 payout-split changes and controller rotation return `UNSUPPORTED`.
+- Portal 6–7 tokens with a native quote retain identity, metadata and balance reads, but fee amounts are unknown and fee execution is unsupported. This differs from Portals 3–5, whose ERC20 USDC quote credits can be claimed as native USDC payouts.
+- Both versions support timed and permanent locks in the currently supported deployments. Historical lock deployments are not discovered.
 - There is no indexer: no market-wide search, trade history or analytics. Balance reads cover the tokens you name.
 - Trades with approvals go to Circle as one atomic batch. That hosted batch path has not yet had a live mainnet acceptance test.
 - If a result is unclear, check `argus_get_action` before you try again. Never send a replacement request for an unknown outcome.
