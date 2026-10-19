@@ -377,6 +377,18 @@ test("mainnet subprocess actions serialize the Circle sender across one shared j
   assert.doesNotThrow(() => h.store.beforeSubmit(remaining.id, 0, attempt));
 });
 
+test("a legacy sell reserves the sell tax its token charges from the remaining balance, never less than it sells", t => {
+  const h = mainnetFixture(t);
+  acquire(h.store);
+  const surcharged = (amount, debit) => mainnetAction({ token: ASSET, actor: TOKEN, side: "sell", currencyIn: ASSET, amountInRaw: amount, inventoryDebitRaw: debit }, { kind: "trade" });
+  h.store.prepare(surcharged("900", "909"));
+  assert.equal(h.store.getInventory(ASSET, TOKEN).reservedRaw, "909");
+  assert.equal(h.store.getInventory(ASSET, TOKEN).availableRaw, "91");
+  assert.throws(() => h.store.prepare(surcharged("91", "92")), { code: "INSUFFICIENT_INVENTORY" });
+  assert.throws(() => h.store.prepare(surcharged("50", "49")), { code: "INVALID_AMOUNT" });
+  assert.doesNotThrow(() => h.store.prepare(surcharged("90", "91")));
+});
+
 test("mainnet sells reserve only verified launch and buy inventory and do not credit USDC proceeds", t => {
   const h = mainnetFixture(t);
   assert.equal(h.store.getInventory(ASSET, TOKEN).availableRaw, "0");

@@ -47,11 +47,21 @@ Project lists are not a complete wallet inventory or a market-wide index. Use `a
 
 New hosted trade plans group required approvals and the swap into one atomic wallet submission. Inspect `batchCalls` and the summary before execution. A swap with sufficient allowances remains one direct call. Existing saved actions retain their original steps. If a batch submission is uncertain, recover that same action; never fall back to separate approvals or a second swap. Circle remains the executor.
 
+## Older tokens, Portals 1 to 7
+
+Every Argus token works for reads, trades, creator-fee claims and locks; launching uses Portal 8 only. The engine finds the launching Portal itself and reports its line and generation; do not infer it from a name or symbol.
+
+- Trades use the token's own pool with its launch tax in the minimum output. Only USDC pairs trade. Legacy Portals 1 and 2 tokens trade once graduated, and a sell also spends their sell tax from the remaining balance (`inventoryDebitRaw`).
+- A claim receipt with `delivered: false` means another caller delivered the share first. It is settled; do not prepare it again.
+- `claim_fees` is the only management operation on these tokens. Each claim sends only calls anyone may send and pays the launch's own creator address. Read `argus_get_claim_details` first: `deliverableNow` is what one claim delivers, and `refusal` explains a refused one.
+- `CREATOR_SIGNATURE_REQUIRED` means only the creator wallet can collect that share. Tell the user which contract and call it names. Never ask for the creator's key, and never route it through the Circle wallet.
+- `CONVERSION_QUEUED` means a Portal 7 share waits for a keeper conversion to USDC. `NOTHING_TO_CLAIM` means nothing can be delivered now. Neither is a failure to retry in a loop.
+
 ## Reads without an indexer
 
-- `argus_get_token_details` reads a supported token by address without importing it. Supply its exact `launchBlock` only when known; otherwise launch metadata can be unavailable.
+- `argus_get_token_details` reads any Argus token (Portals 1 to 8) by address without importing it. Supply its exact `launchBlock` only when known; otherwise launch metadata can be unavailable.
 - `argus_get_claim_details` reads creator-fee amounts, asset units and registered recipients. Check `canClaim` and `executionSupported` before preparing a claim. A zero amount does not need a transaction. This is an observation, not reserved fees, payout-conversion output or a guarantee of sponsorship.
-- `argus_get_wallet_balances` reads USDC and at most 20 supplied supported tokens for an account. It does not discover every asset or calculate portfolio value.
+- `argus_get_wallet_balances` reads USDC and at most 20 supplied Argus tokens for an account. It does not discover every asset or calculate portfolio value.
 - `argus_get_lock` and `argus_list_locks` inspect timed locks in the supported deployment without recovering inventory. Identify a lock by chain, deployment and ID together. For another page, use `nextOffset` and preserve the returned `observedBlockNumber` as `blockNumber`; compare block hashes across pages.
 - `argus_search_projects` searches saved project names, symbols and addresses only. Empty results do not establish that a token does not exist onchain.
 

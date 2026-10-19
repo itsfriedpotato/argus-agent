@@ -65,9 +65,24 @@ Setup also writes an `mcp.json` with the exact paths for other MCP clients, and 
 
 ## Scope and limits
 
-- Token reads and actions cover tokens launched on Argus Portal 8. Older tokens answer `UNSUPPORTED`. That includes the ARGUS token itself.
+Every Argus token works, from Portal 1 to Portal 8. Launching uses Portal 8 only.
+
+| Tokens from | Read | Buy and sell | Creator-fee claim | Lock |
+| --- | --- | --- | --- | --- |
+| Portal 8 | Yes | Yes | Yes | Yes |
+| Portals 5 to 7 | Yes | Yes | Split, then claim to the creator | Yes |
+| Portals 3 and 4 | Yes | Yes | The split pays the creator directly | Yes |
+| Portals 1 and 2, with ARGUS and ARCASH | Yes | Yes, once the token has graduated | A parked payout or an undispatched share | Yes |
+
+- Trades go through the token's own pool, and the minimum output includes the live launch tax. Only USDC pairs trade: other pairs route through pools that skip the launch tax.
+- Selling a Portal 1 or 2 token also costs its sell tax, taken from the tokens you keep: selling 100 ARGUS uses 101.
+- A buy must leave 0.25 USDC in the wallet for gas, on every Portal: Arc pays gas from the same USDC balance.
+- Claims on Portals 1 to 7 only send calls anyone may send, and each pays the launch's own creator address. Every claim is simulated first.
+- Some shares only the creator wallet can collect: a share a Portal 3 or 4 splitter could not pay out, and the Portal 1 and 2 fee locker share. The agent never signs as the creator, so it refuses these and names the contract and call.
+- A Portal 7 share queued for conversion to USDC cannot be claimed until a keeper converts it.
+- Portals 1 to 7 have no payout split or controller rotation.
 - There is no indexer: no market-wide search, trade history or analytics. Balance reads cover the tokens you name.
-- Trades with approvals go to Circle as one atomic batch. That hosted batch path has not yet had a live mainnet acceptance test.
+- Trades with approvals, and claims that split before they pay, go to Circle as one atomic batch. That hosted batch path has not yet had a live mainnet acceptance test.
 - If a result is unclear, check `argus_get_action` before you try again. Never send a replacement request for an unknown outcome.
 
 ## Repository layout

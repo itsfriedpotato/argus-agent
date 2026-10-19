@@ -5,8 +5,9 @@ import { prepareLaunch as publishedPrepareLaunch } from "./vendor/argus-v5-launc
 import * as rules from "./generated/v5-launch-rules.mjs";
 import * as market from "./generated/v5-market.mjs";
 import { ARC_ADDRESSES } from "./generated/addresses.mjs";
-import { erc20Abi, permit2Abi, stateViewAbi, universalRouterAbi } from "./generated/abis.mjs";
+import { erc20Abi, launchTokenAbi, permit2Abi, stateViewAbi, universalRouterAbi } from "./generated/abis.mjs";
 import { encodeV4ExactInSwap } from "./generated/swap-encoding.mjs";
+import { assertTradeBalance, findLaunch, lineState, planLineClaim, planLineTrade, tokenCreatedEvent } from "./lines.mjs";
 
 const bundleDefault = JSON.parse(readFileSync(new URL("./vendor/argus-v4.json", import.meta.url), "utf8"));
 
@@ -76,18 +77,76 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
     return { block, read };
   }
 
-  async function creatorState(token, read) {
+  async function creatorState(token, read, known) {
     const liveRegistry = await read(portal, portalAbi, "creatorRegistry");
     if (!same(liveRegistry, registry)) fail("The Portal creator registry differs from the published bundle.", "CONTRACT_MISMATCH");
-    const record = await read(portal, portalAbi, "launches", [token]);
+    const record = known ?? await read(portal, portalAbi, "launches", [token]);
     if (same(record[0], zeroAddress)) fail("This token was not launched by the supported Portal8.", "UNSUPPORTED");
     const [payout, proposed, escrow, split] = await Promise.all([
       read(registry, registryAbi, "payoutOf", [token]), read(registry, registryAbi, "proposedPayout", [token]),
       read(registry, registryAbi, "escrowOf", [token]), read(registry, registryAbi, "payoutSplit", [token]),
     ]);
     if (same(payout, zeroAddress) || !same(escrow, record[1])) fail("The creator registry and launch escrow disagree.", "CONTRACT_MISMATCH");
-    return { token, hook: record[0], escrow, payout, controller: payout, proposed: same(proposed, zeroAddress) ? null : proposed,
+    return { token, line: "v5", generation: 8, portal, hook: record[0], escrow, payout, controller: payout, proposed: same(proposed, zeroAddress) ? null : proposed,
       split: split[0].map((recipient, i) => ({ recipient, bps: Number(split[1][i]) })), tokenIsToken0: record[6] };
+  }
+
+  /** Any Argus launch, Portals 1 to 8, from the Portals' own records. Refuses everything else. */
+  async function launchOf(token, read) {
+    const launch = await findLaunch(read, token);
+    if (!launch) fail("This token was not launched by an Argus Portal.", "UNSUPPORTED");
+    return launch;
+  }
+
+  /** The creator-fee delivery a Portals 1-7 launch allows at this block, simulated before anything is prepared. */
+  async function lineClaim(launch, read, block) {
+    const state = await lineState(read, launch);
+    const plan = await planLineClaim({ call: (request) => client.call({ ...request, blockNumber: block.number }),
+      getCode: (target) => client.getCode({ address: target, blockNumber: block.number }) }, state);
+    return { state, plan };
+  }
+
+  /** What a claim would deliver now, or the safe refusal it would answer. Prepares nothing. */
+  async function previewClaim(tokenInput) {
+    const token = address(tokenInput, "Token");
+    const { block, read } = await snapshot();
+    const launch = await launchOf(token, read);
+    if (launch.line === "v5") fail("Portal 8 claims are read from the escrow.", "UNSUPPORTED");
+    try {
+      const { plan } = await lineClaim(launch, read, block);
+      return immutable({ supported: true, flow: plan.flow, payer: plan.payer, deliverableWei: plan.deliveredWei, observedBlockNumber: block.number });
+    } catch (error) {
+      if (!error.safe) throw error;
+      return immutable({ supported: false, code: error.code, message: error.message, observedBlockNumber: block.number });
+    }
+  }
+
+  function metadataRange(fromBlock, toBlock, block) {
+    const start = BigInt(fromBlock);
+    const end = toBlock === undefined ? start : BigInt(toBlock);
+    if (start < 0n || end < start || end > block.number || end - start >= 10_000n) fail("Metadata reads require a known launch range of at most 10000 blocks.");
+    return { start, end };
+  }
+
+  /** A Portals 1-7 launch: an immutable creator payee, no registry, split or controller rotation. */
+  async function lineProject(launch, read, block, { roles, fromBlock, toBlock } = {}) {
+    const token = launch.token;
+    const state = await lineState(read, launch);
+    const [name, symbol, logo, balances] = await Promise.all([
+      read(token, launchTokenAbi, "name"), read(token, launchTokenAbi, "symbol"), read(token, launchTokenAbi, "logo"), roleBalances(token, roles, block, read),
+    ]);
+    let metadata = null;
+    let metadataStatus = "launch_block_required";
+    if (fromBlock !== undefined) {
+      const { start, end } = metadataRange(fromBlock, toBlock, block);
+      const logs = await client.getLogs({ address: launch.portal, event: tokenCreatedEvent(launch.line), args: { token }, fromBlock: start, toBlock: end, strict: true });
+      if (logs.length > 1) fail("Multiple launch events were returned for one token.", "CONTRACT_MISMATCH");
+      metadata = logs[0]?.args ?? null;
+      metadataStatus = metadata ? "confirmed_event" : "not_found_in_requested_range";
+    }
+    return { ...state, controller: state.payee, payout: state.payee, proposed: null, split: [], escrow: null, name, symbol, logo,
+      metadata, metadataStatus, balances, observedBlockNumber: block.number, management: ["claim_fees"],
+      authorityNote: "Creator fees on this line pay the launch's own creator address, which nobody can change. There is no payout split or controller rotation." };
   }
 
   async function prepareProject(input) {
@@ -163,7 +222,9 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
   async function readProject(tokenInput, { roles, fromBlock, toBlock } = {}) {
     const token = address(tokenInput, "Token");
     const { block, read } = await snapshot();
-    const state = await creatorState(token, read);
+    const launch = await launchOf(token, read);
+    if (launch.line !== "v5") return immutable(await lineProject(launch, read, block, { roles, fromBlock, toBlock }));
+    const state = await creatorState(token, read, launch.record);
     const [name, symbol, logo, owedCreatorRaw, balances] = await Promise.all([
       read(token, tokenAbi, "name"), read(token, tokenAbi, "symbol"), read(token, tokenAbi, "logo"),
       read(state.escrow, escrowAbi, "owedCreator"), roleBalances(token, roles, block, read),
@@ -171,9 +232,7 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
     let metadata = null;
     let metadataStatus = "launch_block_required";
     if (fromBlock !== undefined) {
-      const start = BigInt(fromBlock);
-      const end = toBlock === undefined ? start : BigInt(toBlock);
-      if (start < 0n || end < start || end > block.number || end - start >= 10_000n) fail("Metadata reads require a known launch range of at most 10000 blocks.");
+      const { start, end } = metadataRange(fromBlock, toBlock, block);
       const logs = await client.getLogs({ address: portal, event: portalAbi.find((x) => x.type === "event" && x.name === "LaunchMetadata"),
         args: { token }, fromBlock: start, toBlock: end, strict: true });
       if (logs.length > 1) fail("Multiple launch metadata events were returned for one token.", "CONTRACT_MISMATCH");
@@ -190,7 +249,17 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
     const token = address(input.token, "Token");
     const actor = address(input.actor, "Actor");
     const { block, read } = await snapshot();
-    const state = await creatorState(token, read);
+    const launch = await launchOf(token, read);
+    if (launch.line !== "v5") {
+      if (input.operation !== "claim_fees") fail("Portals 1-7 have no payout split or controller rotation. Only creator-fee claims apply to this token.", "UNSUPPORTED");
+      const { state, plan } = await lineClaim(launch, read, block);
+      const expected = { token, actor, operation: "claim_fees", line: state.line, generation: state.generation, portal: state.portal,
+        payer: plan.payer, flow: plan.flow, controllerBefore: state.payee, recipients: [{ recipient: state.payee, bps: 10_000 }], simulatedDeliveryWei: plan.deliveredWei };
+      return immutable({ steps: plan.steps, expected, summary: { kind: "management", ...expected, observedBlockNumber: block.number, spendUsdcRaw: "0",
+        ownershipNote: "Every call is permissionless and pays only the launch's own creator address. The sender pays gas and receives nothing.",
+        note: "Simulated at the observed block. The receipt determines the actual amount delivered." } });
+    }
+    const state = await creatorState(token, read, launch.record);
     if (["set_split", "propose_owner"].includes(input.operation) && !same(actor, state.payout)) fail("Only the current payout controller can make this change.", "UNAUTHORIZED");
     let step;
     const expected = { token, actor, operation: input.operation, controllerBefore: state.payout };
@@ -233,7 +302,20 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
     const slippageBps = input.slippageBps ?? 100;
     if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps >= 10_000) fail("slippageBps must be between 0 and 9999.");
     const { block, read } = await snapshot();
-    const state = await creatorState(token, read);
+    const launch = await launchOf(token, read);
+    if (launch.line !== "v5") {
+      const line = await lineState(read, launch);
+      const plan = await planLineTrade(read, block, line, { actor, isBuy, amountIn, slippageBps });
+      const expected = { token, actor, side: input.side, currencyIn: plan.currencyIn, currencyOut: plan.currencyOut, amountInRaw: amountIn,
+        minimumAmountOutRaw: plan.minimum, routerMinimumAmountOutRaw: plan.routerMinimum, deadline: plan.deadline,
+        line: line.line, generation: line.generation, route: plan.route, pool: plan.pool,
+        ...(plan.walletDebitRaw > amountIn ? { inventoryDebitRaw: plan.walletDebitRaw } : {}) };
+      return immutable({ steps: plan.steps, expected, summary: { kind: "trade", ...expected, quotedAmountOutRaw: plan.quoted, slippageBps,
+        spendUsdcRaw: isBuy ? amountIn : 0n, observedBlockNumber: block.number, taxBps: plan.taxBps, impactBps: plan.impactBps,
+        ...(plan.sellSurchargeBps ? { sellSurchargeBps: plan.sellSurchargeBps, walletDebitNote: "The token also charges its sell tax from the remaining balance, up to inventoryDebitRaw in total." } : {}),
+        note: "Estimate from current pool state; simulate the exact transaction before signing. Actual output requires a confirmed receipt." } });
+    }
+    const state = await creatorState(token, read, launch.record);
     const [quoteAsset, buyTaxBps, sellTaxBps, launchedAt, tokenDecimals] = await Promise.all([
       read(state.hook, hookAbi, "quoteAsset"), read(state.hook, hookAbi, "buyTaxBps"), read(state.hook, hookAbi, "sellTaxBps"),
       read(state.hook, hookAbi, "launchedAt"), read(token, erc20Abi, "decimals"),
@@ -249,7 +331,7 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
       read(currencyIn, erc20Abi, "balanceOf", [actor]), read(currencyIn, erc20Abi, "allowance", [actor, ARC_ADDRESSES.permit2]),
       read(ARC_ADDRESSES.permit2, permit2Abi, "allowance", [actor, currencyIn, router]),
     ]);
-    if (balance < amountIn) fail("The trading wallet does not hold the full input amount.", "INSUFFICIENT_BALANCE");
+    assertTradeBalance(balance, amountIn, isBuy);
     if (liquidity <= 0n || slot0[0] <= 0n) fail("The pool has no usable liquidity.", "NO_LIQUIDITY");
     const raw = market.quoteV5ExactIn({ isBuy, amountIn, tokenIsToken0: BigInt(token) < BigInt(usdc), sqrtPriceX96: slot0[0], liquidity,
       buyTaxBps: Number(buyTaxBps), sellTaxBps: Number(sellTaxBps), snipeBps: market.v5SnipeBps(Number(block.timestamp) - Number(launchedAt)) });
@@ -277,14 +359,15 @@ export function createContractAdapter(client, { bundle = bundleDefault, prepareL
     const { block, read } = await snapshot();
     const usdcRaw = await read(usdc, erc20Abi, "balanceOf", [owner]);
     const holdings = await Promise.all(tracked.map(async (token) => {
-      await creatorState(token, read);
+      const launch = await launchOf(token, read);
+      if (launch.line === "v5") await creatorState(token, read, launch.record);
       const [name, symbol, balanceRaw, decimals] = await Promise.all([read(token, erc20Abi, "name"), read(token, erc20Abi, "symbol"),
         read(token, erc20Abi, "balanceOf", [owner]), read(token, erc20Abi, "decimals")]);
-      return { token, name, symbol, balanceRaw, decimals: Number(decimals) };
+      return { token, line: launch.line, generation: launch.generation, name, symbol, balanceRaw, decimals: Number(decimals) };
     }));
     return immutable({ account: owner, usdcRaw, usdcDecimals: 6, holdings, observedBlockNumber: block.number,
-      scope: "Explicitly tracked Portal8 tokens only; not complete wallet discovery, historical PnL or USD valuation." });
+      scope: "Explicitly tracked Argus tokens (Portals 1-8) only; not complete wallet discovery, historical PnL or USD valuation." });
   }
 
-  return Object.freeze({ prepareProject, readProject, prepareManagement, prepareTrade, readPortfolio });
+  return Object.freeze({ prepareProject, readProject, prepareManagement, prepareTrade, readPortfolio, previewClaim });
 }

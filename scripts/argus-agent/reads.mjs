@@ -27,7 +27,8 @@ export function createReadOperations({ client, store, roles = {} }) {
     const readContract = request => client.readContract({ ...request, blockNumber: block.number });
     // The shared adapter's snapshots must use this exact block too.
     const contracts = createContractAdapter({ getChainId: async () => 5042, getBlock: async () => block,
-      readContract, getLogs: request => client.getLogs(request) });
+      readContract, getLogs: request => client.getLogs(request),
+      call: request => client.call({ ...request, blockNumber: block.number }), getCode: request => client.getCode({ ...request, blockNumber: block.number }) });
     return { block, contracts, readContract, async finish(value, scope) {
       const final = await client.getBlock({ blockNumber: block.number });
       if (!same(final.hash, block.hash)) fail('ARGUS_READ_SNAPSHOT_CHANGED', 'The observed block changed during the read. Retry the read.');
@@ -38,8 +39,11 @@ export function createReadOperations({ client, store, roles = {} }) {
   }
 
   async function feeAssets(project, readContract) {
-    const [quote, payout] = await Promise.all(['quoteAsset', 'payoutAsset'].map(functionName =>
-      readContract({ address: project.escrow, abi: escrowAbi, functionName })));
+    // Portals 1-7 have no escrow: the launch's own quote is the fee asset. A Portal 7 splitter that
+    // converts pays the converted share in USDC; the legacy line keeps native 18dp USDC.
+    const [quote, payout] = project.line && project.line !== 'v5' ? [project.quoteAsset, project.converts ? usdc : project.quoteAsset]
+      : await Promise.all(['quoteAsset', 'payoutAsset'].map(functionName =>
+        readContract({ address: project.escrow, abi: escrowAbi, functionName })));
     const quoteAsset = getAddress(quote), payoutAsset = getAddress(payout);
     if (same(quoteAsset, zeroAddress) || same(payoutAsset, zeroAddress)) fail('ARGUS_TOKEN_UNITS_INVALID', 'The creator-fee assets could not be verified.');
     const [rawDecimals, symbol] = await Promise.all(['decimals', 'symbol'].map(functionName =>
@@ -47,7 +51,35 @@ export function createReadOperations({ client, store, roles = {} }) {
     const decimals = Number(rawDecimals);
     if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255 || typeof symbol !== 'string')
       fail('ARGUS_TOKEN_UNITS_INVALID', 'The creator-fee quote asset units could not be verified.');
+    if (project.owedCreatorUnit === 'native-usdc-18dp') return { quoteAsset, payoutAsset, decimals: 18, quoteDecimals: decimals, symbol, native: true };
     return { quoteAsset, payoutAsset, decimals, symbol };
+  }
+  const older = project => Boolean(project.line) && project.line !== 'v5';
+
+  /** A Portals 1-7 creator lane: one immutable payee, read from the launch's own contracts. */
+  function lineClaim(project, owed, fees, preview) {
+    const legacy = project.line === 'legacy';
+    const pushes = project.line === 'hooked' && project.generation < 5;
+    const creatorOnly = legacy ? BigInt(project.lockerParkedRaw ?? 0) : pushes ? owed : 0n;
+    const available = pushes ? 0n : owed;
+    return { token: project.token, line: project.line, generation: project.generation, portal: project.portal,
+      payer: legacy ? project.processor : project.splitter, controller: project.controller,
+      quoteAsset: fees.quoteAsset, payoutAsset: fees.payoutAsset, currency: fees.symbol,
+      claimable: amount(available, fees.decimals), canClaim: available > 0n,
+      amountKind: legacy ? 'parked-native-usdc-18dp' : 'credited-quote-asset',
+      creatorOnly: creatorOnly > 0n ? { amount: amount(creatorOnly, fees.decimals),
+        contract: legacy ? project.locker : project.splitter, call: 'claim()',
+        note: 'Only the creator wallet can send this call. This agent never signs as the creator.' } : null,
+      ...(project.converts ? { conversionQueued: true } : {}),
+      // Simulated at this block: what one prepared claim would deliver now, splitting first where that adds to it.
+      deliverableNow: preview.supported ? { ...amount(BigInt(preview.deliverableWei), 18), unit: 'native-usdc-18dp', flow: preview.flow } : null,
+      executionSupported: preview.supported,
+      ...(preview.supported ? {} : { refusal: { code: preview.code, message: preview.message } }),
+      reason: preview.supported ? 'fees_available' : available > 0n ? 'fees_available' : 'nothing_to_claim',
+      recipients: [{ recipient: project.controller, bps: 10000 }],
+      permission: legacy ? 'The processor pushes the creator share on dispatch; a parked share is delivered by permissionless claim(creator).'
+        : pushes ? 'This splitter pushes the creator share on distribute(). A share it could not push stays parked for the creator alone.'
+          : 'Permissionless: claim(creator) on the splitter always pays the creator. A read does not reserve fees or prepare a transaction.' };
   }
 
   function lockRecord(id, value, block) {
@@ -86,13 +118,15 @@ export function createReadOperations({ client, store, roles = {} }) {
       if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) fail('ARGUS_TOKEN_UNITS_INVALID', 'Token decimals could not be verified.');
       const fees = await feeAssets(project, readContract);
       return view.finish({ project, units: { tokenDecimals: decimals, usdcDecimals: 6, roleBalanceUsdcAsset: usdc,
-        creatorFees: fees, owedCreatorUnit: 'quote-asset-base-units' } },
-        'One supported Portal8 token and configured role balances. Metadata is read only from a supplied or saved exact launch block.');
+        creatorFees: fees, owedCreatorUnit: project.owedCreatorUnit ?? 'quote-asset-base-units' } },
+        'One Argus token (Portals 1-8) and configured role balances. Metadata is read only from a supplied or saved exact launch block.');
     }
     if (name === 'argus_get_claim_details') {
       const project = await contracts.readProject(args.token);
       const owed = BigInt(project.owedCreatorRaw);
       const fees = await feeAssets(project, readContract);
+      if (older(project)) return view.finish({ claim: lineClaim(project, owed, fees, await contracts.previewClaim(args.token)) },
+        'Creator fees already credited or parked for this launch\'s own creator. Fees not yet split, holder rewards and claim history are not inferred.');
       return view.finish({ claim: { token: project.token, escrow: project.escrow, controller: project.controller,
         quoteAsset: fees.quoteAsset, payoutAsset: fees.payoutAsset, currency: fees.symbol, claimable: amount(owed, fees.decimals), canClaim: owed > 0n,
         amountKind: 'owed-quote-asset-before-any-payout-conversion',
@@ -106,7 +140,7 @@ export function createReadOperations({ client, store, roles = {} }) {
       const portfolio = await contracts.readPortfolio(args);
       return view.finish({ portfolio: { ...portfolio, usdc: amount(portfolio.usdcRaw, 6),
         holdings: portfolio.holdings.map(holding => ({ ...holding, balance: amount(holding.balanceRaw, holding.decimals) })) } },
-      'USDC and explicitly supplied supported Portal8 tokens only; no complete wallet discovery, prices or PnL.');
+      'USDC and explicitly supplied Argus tokens (Portals 1-8) only; no complete wallet discovery, prices or PnL.');
     }
     const code = await client.getCode({ address: CURRENT_TIME_LOCK, blockNumber: block.number });
     if (!code || code === '0x') fail('ARGUS_LOCK_DEPLOYMENT_MISSING', 'The supported time-lock deployment has no contract code at the observed block.');

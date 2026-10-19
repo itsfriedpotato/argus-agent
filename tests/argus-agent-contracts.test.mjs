@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { decodeFunctionData, getAddress, zeroAddress } from "viem";
 import { createContractAdapter } from "../scripts/argus-agent/contracts.mjs";
+import { BUY_GAS_HEADROOM_USDC_RAW } from "../scripts/argus-agent/lines.mjs";
 
 const bundle = JSON.parse(readFileSync(new URL("../scripts/argus-agent/vendor/argus-v4.json", import.meta.url), "utf8"));
 const p8 = bundle.portal8;
@@ -184,6 +185,22 @@ test("trade uses exact input approvals, a timed router allowance and the supplie
   assert.equal(buy.expected.amountInRaw, "500000");
   assert.equal(buy.summary.spendUsdcRaw, "500000");
   await assert.rejects(adapter.prepareTrade({ token: TOKEN, actor: C, side: "buy", amountIn: "0.5000001" }), /exact decimal/);
+});
+
+test("a Portal 8 buy keeps 0.25 USDC of gas headroom in the same balance; a sell needs only its input", async () => {
+  // Arc pays gas in USDC, so a buy that spends the whole balance could never pass the execution reserve.
+  const usdc = (raw) => ({ balanceOf: (request) => request.address.toLowerCase() === USDC.toLowerCase() ? raw : 10n ** 24n });
+  const amountIn = 1_000_000n;
+  await assert.rejects(fixture(usdc(amountIn)).adapter.prepareTrade({ token: TOKEN, actor: C, side: "buy", amountIn: "1" }),
+    { code: "INSUFFICIENT_BALANCE", message: /0\.25 USDC of gas headroom/ });
+  await assert.rejects(fixture(usdc(amountIn + BUY_GAS_HEADROOM_USDC_RAW - 1n)).adapter.prepareTrade({ token: TOKEN, actor: C, side: "buy", amountIn: "1" }),
+    { code: "INSUFFICIENT_BALANCE" });
+  const plan = await fixture(usdc(amountIn + BUY_GAS_HEADROOM_USDC_RAW)).adapter.prepareTrade({ token: TOKEN, actor: C, side: "buy", amountIn: "1" });
+  assert.equal(plan.summary.spendUsdcRaw, "1000000");
+  const sell = (raw) => fixture({ balanceOf: (request) => request.address.toLowerCase() === USDC.toLowerCase() ? 0n : raw }).adapter
+    .prepareTrade({ token: TOKEN, actor: C, side: "sell", amountIn: "1" });
+  assert.equal((await sell(10n ** 18n)).expected.amountInRaw, (10n ** 18n).toString());
+  await assert.rejects(sell(10n ** 18n - 1n), { code: "INSUFFICIENT_BALANCE", message: /full input amount/ });
 });
 
 test("known-token portfolio remains explicitly scoped and never scans for untracked holdings", async () => {

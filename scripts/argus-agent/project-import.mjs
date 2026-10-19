@@ -1,5 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { decodeEventLog, getAddress, zeroAddress } from 'viem';
+import { PORTALS } from './generated/addresses.mjs';
+import { erc20Abi } from './generated/abis.mjs';
+import { findLaunch, lineState, tokenCreatedEvent } from './lines.mjs';
 
 const bundle = JSON.parse(readFileSync(new URL('./vendor/argus-v4.json', import.meta.url), 'utf8')).portal8;
 const addresses = bundle.addresses;
@@ -12,6 +15,15 @@ const fail = message => { throw Object.assign(new Error(message), { code: 'ARGUS
 const hash = value => /^0x[\da-f]{64}$/i.test(value ?? '');
 const events = (receipt, name) => receipt.logs.filter(log => same(log.address, addresses.portal) && !log.removed).flatMap(log => {
   try { const event = decodeEventLog({ abi: portalAbi, data: log.data, topics: log.topics, strict: true }); return event.eventName === name ? [event.args] : []; } catch { return []; }
+});
+/** TokenCreated from one of the Portals 1-7, decoded by that Portal's own line. Anyone can emit the topic; only these emitters count. */
+const olderLaunches = receipt => receipt.logs.filter(log => !log.removed).flatMap(log => {
+  const portal = PORTALS.find(item => same(item.address, log.address));
+  if (!portal) return [];
+  try {
+    const event = decodeEventLog({ abi: [tokenCreatedEvent(portal.line)], data: log.data, topics: log.topics, strict: true });
+    return event.eventName === 'TokenCreated' ? [{ portal: getAddress(portal.address), line: portal.line, ...event.args }] : [];
+  } catch { return []; }
 });
 
 export function projectManagementLink(token, requiredSigner, operation = 'manage_creator_fees', { lockId } = {}) {
@@ -36,7 +48,11 @@ export async function verifyProjectImport(client, { launchTxHash, token: request
   const canonical = await client.getBlock({ blockNumber: receipt.blockNumber });
   if (!same(canonical.hash, receipt.blockHash) || canonical.number !== receipt.blockNumber) fail('The launch receipt does not belong to the canonical block.');
   const launched = events(receipt, 'Launched').filter(event => !requestedToken || same(event.token, requestedToken));
-  if (launched.length !== 1) fail('Select one supported Portal8 launch token from this receipt.');
+  if (!launched.length) {
+    const older = olderLaunches(receipt).filter(event => !requestedToken || same(event.token, requestedToken));
+    if (older.length === 1) return verifyOlderImport(client, receipt, launchTxHash, older[0]);
+  }
+  if (launched.length !== 1) fail('Select one Argus launch token from this receipt.');
   const launch = launched[0];
   const token = getAddress(launch.token);
   if (same(token, zeroAddress) || same(launch.creator, zeroAddress)) fail('The receipt does not identify a valid launch.');
@@ -74,6 +90,34 @@ export async function verifyProjectImport(client, { launchTxHash, token: request
     authorityNote: 'Historical creator records the launch sender. Controller is current creator-fee authority. Import grants neither signing authority nor spendable inventory.' });
 }
 
+/** A Portals 1-7 launch, from its canonical TokenCreated and the Portal's own current record. */
+async function verifyOlderImport(client, receipt, launchTxHash, event) {
+  const token = getAddress(event.token);
+  if (same(event.creator, zeroAddress)) fail('The receipt does not identify a valid launch.');
+  const observed = await client.getBlock({ blockTag: 'latest' });
+  if (typeof observed.number !== 'bigint' || observed.number < receipt.blockNumber || !hash(observed.hash)) fail('A current canonical snapshot is required.');
+  const read = (address, abi, functionName, args = []) => client.readContract({ address, abi, functionName, args, blockNumber: observed.number });
+  const launch = await findLaunch(read, token);
+  if (!launch || launch.line === 'v5' || !same(launch.portal, event.portal) || !same(launch.record.creator, event.creator)
+      || (launch.line === 'hooked' ? !same(launch.record.poolId, event.poolId) : !same(launch.record.pool, event.pool))) fail('The Portal launch state does not match its canonical event.');
+  const state = await lineState(read, launch);
+  const [name, symbol] = await Promise.all([read(token, erc20Abi, 'name'), read(token, erc20Abi, 'symbol')]);
+  const [finalLaunchBlock, finalObservedBlock] = await Promise.all([
+    client.getBlock({ blockNumber: receipt.blockNumber }), client.getBlock({ blockNumber: observed.number }),
+  ]);
+  if (!same(finalLaunchBlock.hash, receipt.blockHash) || !same(finalObservedBlock.hash, observed.hash)) fail('Chain observations changed during recovery. Retry the same import.');
+  return plain({ verified: true, source: 'canonical-launch-receipt', chainId: 5042, token,
+    launchTxHash: launchTxHash.toLowerCase(), launchBlock: receipt.blockNumber, launchBlockHash: receipt.blockHash,
+    portal: launch.portal, line: launch.line, generation: launch.generation, creatorRegistry: null,
+    operator: getAddress(event.creator), historicalCreator: getAddress(event.creator), controller: state.payee, proposedController: null,
+    hook: state.hook, splitter: state.splitter, escrow: null, locker: state.locker, pool: state.pool, processor: state.processor, treasury: null,
+    custodyStatus: 'Current holdings and original opening-buy recipients are not inferred from a project reference.',
+    split: [], brand: { name, symbol, imageURI: event.imageURI, website: event.website, twitter: event.twitter, telegram: event.telegram, description: '' },
+    observedBlockNumber: observed.number, observedBlockHash: observed.hash,
+    projectUrl: projectManagementLink(token, state.payee).url,
+    authorityNote: 'A Portals 1-7 launch pays creator fees to its own creator address, which nobody can change. Import grants neither signing authority nor spendable inventory.' });
+}
+
 export function exportProjectManifest(projects) {
   return { format: 'argus-projects', version: 1, chainId: 5042,
     projects: projects.map(project => ({ token: project.token, launchTxHash: project.launchTxHash, launchBlock: project.launchBlock })),
@@ -87,9 +131,9 @@ export async function verifyPositionRecovery(client, { token: inputToken, actor:
   const block = await client.getBlock({ blockTag: 'latest' });
   if (typeof block.number !== 'bigint' || !hash(block.hash)) fail('A canonical position snapshot is required.');
   const read = (address, abi, functionName, args) => client.readContract({ address, abi, functionName, args, blockNumber: block.number });
-  const launch = await read(addresses.portal, portalAbi, 'launches', [token]);
-  if (!launch?.[0] || same(launch[0], zeroAddress)) fail('Only a supported Portal8 token can be recovered.');
-  const balance = await read(token, tokenAbi, 'balanceOf', [actor]);
+  const launch = await findLaunch(read, token);
+  if (!launch) fail('Only a token launched by an Argus Portal can be recovered.');
+  const balance = await read(token, erc20Abi, 'balanceOf', [actor]);
   if (typeof balance !== 'bigint' || balance < 0n) fail('The token balance could not be verified.');
   let lock;
   if (lockId !== undefined) {

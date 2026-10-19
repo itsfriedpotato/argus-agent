@@ -491,3 +491,65 @@ test('previously prepared sequential trades keep their old digest and ordered st
   assert.equal(result.error, undefined, JSON.stringify(result)); assert.equal(result.action.status, 'confirmed');
   assert.equal(h.sends.length, 5); assert.equal(result.budget.spentWei, parseUnits('4.65', 18).toString());
 });
+
+test('an older-line split and claim is one atomic hosted batch with distribute headroom, settled from the payer event', async t => {
+  const SPLITTER = `0x${'77'.repeat(20)}`;
+  const CREATOR = `0x${'88'.repeat(20)}`;
+  const native = '0xfffffffffffffffffffffffffffffffffffffffe';
+  const claimAbi = bundle.contracts.ArgusV4HookedSplitter6.abi;
+  const h = await fixture(t, { changeReceipt: (receipt, expected) => {
+    if (expected?.operation !== 'claim_fees') return;
+    receipt.logs = [event(SPLITTER, claimAbi, 'Claimed', { to: CREATOR, currency: addresses.defaultQuoteAsset, amount: 2_500_000n }),
+      transfer(native, SPLITTER, CREATOR, 2_500_000n * 10n ** 12n), transfer(addresses.defaultQuoteAsset, SPLITTER, CREATOR, 2_500_000n)];
+  } });
+  await launch(h);
+  const older = { ...h.contracts,
+    readProject: async () => ({ line: 'hooked', generation: 6, controller: CREATOR, proposed: null, split: [] }),
+    previewClaim: async () => ({ supported: true, flow: 'distribute-and-claim', deliverableWei: '2500000000000000000' }),
+    prepareManagement: async input => h.plan({ token: input.token, actor: input.actor, operation: 'claim_fees', line: 'hooked', generation: 6, payer: SPLITTER,
+      flow: 'distribute-and-claim', controllerBefore: CREATOR, recipients: [{ recipient: CREATOR, bps: 10000 }], simulatedDeliveryWei: '2500000000000000000' }, '0', 1) };
+  const agent = await h.connect({}, { contracts: older });
+  const prepared = await agent.dispatch('argus_prepare_management', { idempotencyKey: 'older-line-claim', token: TOKEN, operation: 'claim_fees' });
+  assert.equal(prepared.error, undefined, JSON.stringify(prepared));
+  const { action } = prepared;
+  assert.equal(action.steps.length, 1); assert.equal(action.steps[0].batchCalls.length, 2);
+  assert.equal(action.steps[0].to.toLowerCase(), CIRCLE); assert.equal(action.steps[0].principalRaw, '0');
+  assert.equal(action.gasReserveWei, parseUnits('0.16', 18).toString());
+  const confirmed = await agent.dispatch('argus_execute_action', { actionId: action.id });
+  assert.equal(confirmed.error, undefined, JSON.stringify(confirmed));
+  assert.equal(confirmed.action.status, 'confirmed');
+  assert.equal(confirmed.action.steps[0].receipt.actualCreatorFeesUsdcRaw, '2500000', 'one emitter, never both');
+  // The split itself is refused for an older token in a read-only MVP workspace, before any browser route is offered.
+  const mvp = await fixture(t, { mode: 'mainnet-mvp' }); await launch(mvp);
+  const human = await mvp.connect({ executionEnabled: false }, { contracts: older });
+  const refused = await human.dispatch('argus_prepare_management', { idempotencyKey: 'older-line-split', token: TOKEN, operation: 'set_split', parts: [] });
+  assert.equal(refused.error.code, 'UNSUPPORTED'); assert.equal(refused.status, undefined);
+});
+
+test('an older-line push that another caller beat settles at zero, and a share already gone is refused before any submission', async t => {
+  const SPLITTER = `0x${'77'.repeat(20)}`;
+  const CREATOR = `0x${'88'.repeat(20)}`;
+  let deliverable = true;
+  // The exact saved distribute() confirms but pays the creator nothing: no Paid, no USDC.
+  const h = await fixture(t, { changeReceipt: (receipt, expected) => { if (expected?.operation === 'claim_fees') receipt.logs = []; } });
+  await launch(h);
+  const older = { ...h.contracts,
+    readProject: async () => ({ line: 'hooked', generation: 4, controller: CREATOR, proposed: null, split: [] }),
+    previewClaim: async () => deliverable ? { supported: true, flow: 'distribute-push', deliverableWei: '1' }
+      : { supported: false, code: 'NOTHING_TO_CLAIM', message: 'Nothing can be delivered to the creator right now.' },
+    prepareManagement: async input => h.plan({ token: input.token, actor: input.actor, operation: 'claim_fees', line: 'hooked', generation: 4, payer: SPLITTER,
+      flow: 'distribute-push', controllerBefore: CREATOR, recipients: [{ recipient: CREATOR, bps: 10000 }], simulatedDeliveryWei: '1' }) };
+  const agent = await h.connect({}, { contracts: older });
+  const raced = (await agent.dispatch('argus_prepare_management', { idempotencyKey: 'older-line-raced', token: TOKEN, operation: 'claim_fees' })).action;
+  const settled = await agent.dispatch('argus_execute_action', { actionId: raced.id });
+  assert.equal(settled.error, undefined, JSON.stringify(settled));
+  assert.equal(settled.action.status, 'confirmed');
+  assert.equal(settled.action.steps[0].receipt.delivered, false); assert.equal(settled.action.steps[0].receipt.actualCreatorFeesWei, '0');
+  assert.equal((await agent.dispatch('argus_get_action', { actionId: raced.id })).action.status, 'confirmed', 'later reads stay settled');
+  const sends = h.sends.length;
+  const late = (await agent.dispatch('argus_prepare_management', { idempotencyKey: 'older-line-late', token: TOKEN, operation: 'claim_fees' })).action;
+  deliverable = false;
+  const blocked = await agent.dispatch('argus_execute_action', { actionId: late.id });
+  assert.equal(blocked.error.code, 'NOTHING_TO_CLAIM'); assert.equal(h.sends.length, sends, 'nothing was submitted');
+  assert.equal((await agent.dispatch('argus_cancel_action', { actionId: late.id })).action.status, 'cancelled');
+});

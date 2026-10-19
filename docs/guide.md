@@ -65,14 +65,31 @@ There are 19 core tools, with two more when the optional shared service is confi
 
 | Tool | What it reads |
 | --- | --- |
-| `argus_get_token_details` | A supported token by address, its current creator-fee roles and known role balances. Launch metadata needs a known launch block. |
-| `argus_get_claim_details` | Current creator fees, precise asset units, recipients and whether the claim workflow is supported. |
-| `argus_get_wallet_balances` | USDC and up to 20 supplied supported token addresses for a wallet. |
+| `argus_get_token_details` | Any Argus token by address, with its Portal and line, current creator-fee roles and known role balances. Launch metadata needs a known launch block. |
+| `argus_get_claim_details` | Current creator fees, precise asset units, recipients, what one claim would deliver now and whether the claim workflow is supported. |
+| `argus_get_wallet_balances` | USDC and up to 20 supplied Argus token addresses for a wallet. |
 | `argus_get_lock` | A timed lock by ID from the supported deployment, including maturity and withdrawal state. |
 | `argus_list_locks` | A page of an owner's timed locks, up to 50 per request. |
 | `argus_search_projects` | Saved project names, symbols and token addresses in this workspace. |
 
 The search is local, and balance reads cover only the supplied tokens. These are not market-wide search or complete portfolio discovery. Check the returned observation block and coverage; reuse the observation block for later lock pages. Reading a lock does not recover inventory or grant permission to withdraw it. Check claim details before preparing a claim; a zero balance needs no transaction.
+
+## Which tokens work
+
+Every Argus token works, from Portal 1 to Portal 8, ARGUS and ARCASH included. The agent finds the Portal that launched a token from the Portals' own records. Launching uses Portal 8 only.
+
+| Tokens from | Read | Buy and sell | Creator-fee claim | Lock |
+| --- | --- | --- | --- | --- |
+| Portal 8 | Yes | Yes | Yes | Yes |
+| Portals 5 to 7 | Yes | Yes | Split, then claim to the creator | Yes |
+| Portals 3 and 4 | Yes | Yes | The split pays the creator directly | Yes |
+| Portals 1 and 2 | Yes | Yes, once the token has graduated | A parked payout or an undispatched share | Yes |
+
+- **Trades** go through the token's own pool, as argus.world routes them. The minimum output includes the launch tax read from the launch's own contracts. Only USDC pairs trade; other pairs answer `UNSUPPORTED`, because their routes skip the launch tax. On every Portal, Portal 8 included, a buy keeps 0.25 USDC back for gas, which comes out of the same balance: a buy that would leave less is refused when it is prepared. Selling a Portal 1 or 2 token also costs its sell tax, taken from the tokens you keep: selling 100 ARGUS uses 101. The plan reserves that from your inventory as `inventoryDebitRaw`.
+- **Claims** on Portals 1 to 7 only send calls anyone may send, and each pays the launch's own creator address. The Circle wallet pays the gas and receives nothing. Every claim is simulated before it is prepared and again before it is sent. If another caller delivers the share in between, the claim confirms with `delivered: false` and moves nothing.
+- **Refused claims.** A share a Portal 3 or 4 splitter could not pay out, and the Portal 1 and 2 fee locker share, can only be collected by the creator wallet: `CREATOR_SIGNATURE_REQUIRED` names the contract and the call. A Portal 7 share queued for conversion to USDC answers `CONVERSION_QUEUED` until a keeper converts it. Nothing to deliver answers `NOTHING_TO_CLAIM`.
+- **Management.** Portals 1 to 7 have no payout split or controller rotation, so those actions answer `UNSUPPORTED`.
+- **Import** an older token with its launch transaction hash, as with Portal 8. Trades and locks need an imported project, like any other.
 
 ## Recover an existing project first
 
@@ -104,7 +121,7 @@ argus-agent enable-execution
 
 Ask the agent to prepare your action, show the name/amount/recipient/estimated fees, and execute that saved action when authorized. Always inspect `argus_get_action` after an interrupted response. Do not create a replacement request until the original outcome is known.
 
-New Circle trade plans combine required approvals and the swap into one atomic wallet batch. Inspect the ordered `batchCalls` in the saved plan. A trade with sufficient allowances remains one direct swap; older saved actions retain their original steps. If a batch outcome is uncertain, reconcile that same action. Do not replace it with separate approvals or another swap. Actual Circle-hosted batch submission, sponsorship and timing still need a budgeted mainnet acceptance test; simulations do not establish those results.
+New Circle trade plans combine required approvals and the swap into one atomic wallet batch. Inspect the ordered `batchCalls` in the saved plan. A trade with sufficient allowances remains one direct swap; older saved actions retain their original steps. A Portals 5 to 7 claim that splits before it pays is batched the same way. If a batch outcome is uncertain, reconcile that same action. Do not replace it with separate approvals or another swap. Actual Circle-hosted batch submission, sponsorship and timing still need a budgeted mainnet acceptance test; simulations do not establish those results.
 
 Use `argus_cancel_action` to abandon a preparation whose remaining steps were never submitted; it preserves completed fees and refuses uncertain submissions. If Circle returned no transaction hash or provider ID, obtain the transaction hash from Circle history and use `argus_reconcile_transaction` with the original action ID and step index. The SDK verifies the exact canonical transaction before attaching it. Circle CLI 1.1.4 history omits the original idempotency key, so that case cannot be resolved by guessing from the request ID.
 

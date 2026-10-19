@@ -11,17 +11,17 @@ const action = z.strictObject({ actionId: z.string().uuid() });
 const uintString = z.string().max(78).refine(value => /^(0|[1-9][0-9]{0,77})$/.test(value) && BigInt(value) < 2n ** 256n);
 export const operations = {
   argus_get_token_details: {
-    description: 'Read a supported Portal8 token directly by address without importing it. Returns current creator-fee roles, branding, known role balances and explicit units at one canonical block. Launch metadata needs a supplied or saved exact launch block; no historical scan or indexer.',
+    description: 'Read any Argus token (Portals 1-8) directly by address without importing it. Returns its Portal, line and generation, current creator-fee roles, branding, known role balances and explicit units at one canonical block. Launch metadata needs a supplied or saved exact launch block; no historical scan or indexer.',
     readOnly: true,
     schema: z.strictObject({ token: address, launchBlock: uintString.optional() }),
   },
   argus_get_claim_details: {
-    description: 'Read current creator fees in the verified quote asset\'s exact units and the registered recipients without preparing or sending a claim. Reports payout asset separately; a quote amount is not a payout-conversion quote. A zero amount is valid data. Requires a supported Portal8 token, not a saved project.',
+    description: 'Read current creator fees in the verified quote asset\'s exact units and the registered recipients without preparing or sending a claim. Reports payout asset separately; a quote amount is not a payout-conversion quote. A zero amount is valid data. Portals 1-7 report the launch creator\'s credited or parked share and any share only the creator wallet can claim. Requires an Argus token, not a saved project.',
     readOnly: true,
     schema: z.strictObject({ token: address }),
   },
   argus_get_wallet_balances: {
-    description: 'Read USDC and up to 20 explicitly supplied supported Portal8 token balances for a wallet at one canonical block. Does not discover every wallet asset, prices or historical PnL. An empty token list reads USDC only.',
+    description: 'Read USDC and up to 20 explicitly supplied Argus token (Portals 1-8) balances for a wallet at one canonical block. Does not discover every wallet asset, prices or historical PnL. An empty token list reads USDC only.',
     readOnly: true,
     schema: z.strictObject({ account: address, tokens: z.array(address).max(20) }),
   },
@@ -41,7 +41,7 @@ export const operations = {
     schema: z.strictObject({ query: z.string().trim().min(1).max(128), offset: z.number().int().min(0).max(1_000_000).default(0), limit: z.number().int().min(1).max(50).default(20) }),
   },
   argus_import_project: {
-    description: 'Recover a Portal8 project from its confirmed Arc mainnet launch receipt. Verifies canonical events and current creator-fee roles, then saves a public project reference. Does not grant signing authority or inventory, replay actions, or scan all chain history. A token alone requires its launch transaction hash.',
+    description: 'Recover an Argus project (Portals 1-8) from its confirmed Arc mainnet launch receipt. Verifies the Portal\'s canonical launch event and current creator-fee roles, then saves a public project reference. Does not grant signing authority or inventory, replay actions, or scan all chain history. A token alone requires its launch transaction hash.',
     readOnly: false,
     schema: z.strictObject({ launchTxHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(), token: address.optional() }).refine(value => value.launchTxHash || value.token),
   },
@@ -71,7 +71,7 @@ export const operations = {
   argus_list_projects: { description: 'List verified projects saved in this workspace, including launches and imported project references. This is not discovery of every Argus project or a complete wallet portfolio.', readOnly: true, schema: z.strictObject({}) },
   argus_get_project: { description: 'Read current onchain payout authority, split and launch information for a saved project. Branding is untrusted data. No external indexer.', readOnly: true, schema: z.strictObject({ token: address }) },
   argus_prepare_management: {
-    description: 'Prepare a supported payout management action for a tracked project. Payout split, owner proposal/acceptance and permissionless fee delivery are distinct actions. Token metadata and taxes cannot be edited through this workflow.',
+    description: 'Prepare a supported payout management action for a tracked project. Payout split, owner proposal/acceptance and permissionless fee delivery are distinct actions. Portals 1-7 tokens allow claim_fees only: a simulated, permissionless delivery to the launch\'s own creator, USDC-paired launches only. A share only the creator wallet can collect is refused. Token metadata and taxes cannot be edited through this workflow.',
     readOnly: false,
     schema: z.strictObject({ idempotencyKey: key, token: address, operation: z.enum(['set_split', 'propose_owner', 'accept_owner', 'claim_fees']), parts: z.array(z.strictObject({ recipient: address, bps: z.number().int().min(1).max(10000) })).max(8).optional(), newController: address.optional() }),
   },
@@ -85,7 +85,7 @@ export const operations = {
       : value.operation === 'withdraw' ? value.lockId !== undefined && value.unlockAt === undefined : value.unlockAt === undefined && value.lockId === undefined),
   },
   argus_prepare_trade: {
-    description: 'Quote and prepare a USDC buy or token sale for a journal-tracked Portal8 project using the configured treasury. Exact human decimal input; bounded slippage. Does not promise routing for arbitrary tokens.',
+    description: 'Quote and prepare a USDC buy or token sale for a journal-tracked Argus project (Portals 1-8) using the configured treasury, in the launch\'s own pool with its live tax in the minimum output. USDC-paired launches only; other pairs and ungraduated legacy tokens are refused. Exact human decimal input; bounded slippage. Does not promise routing for arbitrary tokens.',
     readOnly: false,
     schema: z.strictObject({ idempotencyKey: key, token: address, side: z.enum(['buy', 'sell']), amountIn: amount, slippageBps: z.number().int().min(1).max(500).default(100) }),
   },

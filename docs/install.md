@@ -26,8 +26,8 @@ argus-agent doctor
 
 - Setup needs your Circle wallet address, so do [Connect Circle](#connect-circle) first.
 - `AMOUNT` is your total USDC limit: at most 100. Without `--budget` it is 10.
-- `doctor` should show `"status":"ready_for_reads"`. `argus-agent --help` shows the version, `0.1.0`.
-- To install exactly this release, run `npm install -g @argus-world/agent@0.1.0`.
+- `doctor` should show `"status":"ready_for_reads"`. `argus-agent --help` shows the version, `0.2.0`.
+- To install exactly this release, run `npm install -g @argus-world/agent@0.2.0`.
 
 ## Connect Circle
 
@@ -161,7 +161,7 @@ These tools work right after setup, before `enable-execution`. They need no acti
 | `argus_export_projects` | Portable project references |
 | `argus_get_action` | A saved action and its status |
 
-Token reads cover Portal 8 launches. Older tokens return `UNSUPPORTED`.
+Reads cover every Argus token, Portals 1 to 8, ARGUS included. Trades, creator-fee claims and locks work on older tokens too, with the limits listed under "Which tokens work" in the user guide. Launching uses Portal 8 only.
 
 ```sh
 argus-agent tools

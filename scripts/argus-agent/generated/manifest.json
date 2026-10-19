@@ -13,6 +13,16 @@
       "sourceSha256": "14bdec036b60549be6e4fb119a7218dce193c538c792f573e3f4e1891b7bd716",
       "sha256": "7e87693fab3037708ca264455147f5d298bf5de1bfbd26ba956ba37725bfb17a"
     },
+    "launch-record.mjs": {
+      "source": "src/lib/contracts/launch-record.ts",
+      "sourceSha256": "2dca48887a94337bbe926b1fa06a0ce09fc487cc7f8b1ce4806b89088e526833",
+      "sha256": "f75d72b9371f324019e0245d5f049745c85a1ec445d95016c0d34758e170dccb"
+    },
+    "legacy-token.mjs": {
+      "source": "src/lib/contracts/legacy-token.ts",
+      "sourceSha256": "563ed3db493743574139644fb4f03d45af26cd546ea7e173ddc8f8b280e2a7d9",
+      "sha256": "c773754b9aa25f27502209819dcc0f4edb147f0800d0e27f030df2d3491573e7"
+    },
     "pool.mjs": {
       "source": "src/lib/contracts/pool.ts",
       "sourceSha256": "631c78fa68f36d8165a9bc19b8d91a6fe198e49f7d3b89845302f6f8205bb645",

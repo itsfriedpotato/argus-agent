@@ -7,6 +7,7 @@ import { catalog, validateOperation } from './catalog.mjs';
 import { createContractAdapter } from './contracts.mjs';
 import { buildAtomicBatch } from './batch.mjs';
 import { createReadOperations } from './reads.mjs';
+import { verifyLineClaim } from './lines.mjs';
 import { pacedReads } from './rpc-reads.mjs';
 import { createLockAdapter, CURRENT_TIME_LOCK, MIN_LOCK_LEAD_SECONDS } from './locks.mjs';
 import { createStore, AgentStoreError, MAINNET_BUDGET_CAP_USDC_RAW } from './store.mjs';
@@ -181,6 +182,8 @@ export async function createArgusAgent(config, dependencies = {}) {
       knownProject(args.token);
       if (name === 'argus_prepare_management' && args.operation !== 'claim_fees') {
         const current = await contracts.readProject(args.token);
+        // No controls exist to link to: Portals 1-7 pay one immutable creator address.
+        if (current.line && current.line !== 'v5') fail('UNSUPPORTED', 'Portals 1-7 have no payout split or controller rotation. Only creator-fee claims apply to this token.');
         const requiredSigner = args.operation === 'accept_owner' ? current.proposed : current.controller;
         return { status: 'needs_human_signature', management: projectManagementLink(args.token, requiredSigner, args.operation), coverage: { ...coverage } };
       }
@@ -228,19 +231,22 @@ export async function createArgusAgent(config, dependencies = {}) {
       }
     }
     const maxFeePerGas = mainnet ? null : (await currentFeeFloor()) * 2n + 1n;
+    // A splitter's distribute() swaps inside the pool: measured up to ~0.9M gas, far above a plain claim.
+    const splits = kind === 'management' && /^distribute/.test(plan.expected.flow ?? '');
     let steps = plan.steps.map((step, index) => {
       if (mainnet) {
-        const feeReserve = index < plan.steps.length - 1 ? '0.05' : kind === 'launch' ? '0.70' : kind === 'trade' ? '0.08' : '0.05';
+        const feeReserve = index < plan.steps.length - 1 ? splits ? '0.08' : '0.05' : kind === 'launch' ? '0.70' : kind === 'trade' || splits ? '0.08' : '0.05';
         return { ...step, from: actor, gasReserveWei: parseUnits(feeReserve, 18).toString(), exactFeeCeiling: false };
       }
-      const gas = index === plan.steps.length - 1 ? kind === 'launch' ? 15_000_000n : kind === 'trade' ? 2_000_000n : 500_000n : 150_000n;
+      const gas = index === plan.steps.length - 1 ? kind === 'launch' ? 15_000_000n : kind === 'trade' ? 2_000_000n : splits ? 1_500_000n : 500_000n : splits ? 1_500_000n : 150_000n;
       return { ...step, from: actor, gas: gas.toString(), maxFeePerGas: maxFeePerGas.toString(), gasReserveWei: (gas * maxFeePerGas).toString() };
     });
-    // Only newly prepared hosted trades are batched. Existing journals retain
-    // their exact submitted or prepared steps and the same idempotency identity.
-    if (mainnet && kind === 'trade' && steps.length > 1) {
+    // Only newly prepared hosted trades and split-then-claim deliveries are batched, as the site
+    // sends distribute and claim atomically. Existing journals retain their exact submitted or
+    // prepared steps and the same idempotency identity.
+    if (mainnet && (kind === 'trade' || splits) && steps.length > 1) {
       const gasReserveWei = steps.reduce((sum, step) => sum + BigInt(step.gasReserveWei), 0n).toString();
-      steps = [{ ...buildAtomicBatch({ account: actor, steps: plan.steps }), from: actor, gasReserveWei, exactFeeCeiling: false }];
+      steps = [{ ...buildAtomicBatch({ account: actor, steps: plan.steps, ...(splits ? { label: 'Split and deliver creator fees atomically' } : {}) }), from: actor, gasReserveWei, exactFeeCeiling: false }];
       plan = { ...plan, summary: { ...plan.summary, execution: 'atomic-batch', contractCalls: plan.steps.length, submissions: 1 } };
     }
     const preparedAtBlock = await client.getBlockNumber({ cacheTime: 0 });
@@ -347,7 +353,10 @@ export async function createArgusAgent(config, dependencies = {}) {
       }
       if (expected.operation === 'propose_owner') assert.ok(same(await read(addresses.creatorRegistry, registryAbi, 'proposedPayout', [expected.token]), expected.proposedController));
       if (expected.operation === 'accept_owner') assert.ok(same(await read(addresses.creatorRegistry, registryAbi, 'payoutOf', [expected.token]), expected.controller));
-      if (expected.operation === 'claim_fees') {
+      if (expected.operation === 'claim_fees' && expected.line && expected.line !== 'v5') {
+        // Portals 1-7: the payer's own event to the immutable creator, matched to the native USDC it moved.
+        Object.assign(evidence, plain(verifyLineClaim(receipt, expected)));
+      } else if (expected.operation === 'claim_fees') {
         const escrowAbi = bundle.portal8.contracts.ArgusV5PayoutEscrow.abi;
         assert.ok(same(await read(addresses.creatorRegistry, registryAbi, 'escrowOf', [expected.token]), step.to));
         const [quoteAsset, payoutAsset, controller, split] = await Promise.all([
@@ -455,6 +464,12 @@ export async function createArgusAgent(config, dependencies = {}) {
       if (action.expected.operation === 'claim_fees') {
         const recipients = current.split.length ? current.split : [{ recipient: current.controller, bps: 10000 }];
         if (digest(recipients.map(part => ({ ...part, recipient: part.recipient.toLowerCase() }))) !== digest(action.expected.recipients.map(part => ({ ...part, recipient: part.recipient.toLowerCase() })))) fail('ARGUS_TERMS_CHANGED', 'Payout recipients changed since the claim was prepared.');
+        // Portals 1-7: a split or dispatch succeeds on nothing, so simulate again. A share another
+        // caller already delivered costs no gas here.
+        if (action.expected.line && action.expected.line !== 'v5') {
+          const preview = await contracts.previewClaim(action.expected.token);
+          if (preview.supported !== true) fail(preview.code ?? 'NOTHING_TO_CLAIM', `${preview.message ?? 'Nothing can be delivered to the creator now.'} Nothing was submitted; cancel this action.`);
+        }
       }
     }
     action = store.reserveExecution(id, { resume: Boolean(action.leaseId) });

@@ -119,11 +119,13 @@ export function createStore(stateDir, { budgetUsdcRaw = "10000000", mode = "loca
   }
   function inventoryDebit(action) {
     const expected = action.expected ?? {};
-    const amount = action.kind === "trade" && expected.side === "sell" ? expected.amountInRaw
+    // A legacy token also charges its sell tax from the seller's remaining balance; such a sell reserves that too.
+    const amount = action.kind === "trade" && expected.side === "sell" ? expected.inventoryDebitRaw ?? expected.amountInRaw
       : action.kind === "lock" && ["timed", "permanent"].includes(expected.operation) ? expected.amountRaw : undefined;
     if (amount === undefined) return null;
     const amountRaw = integer(amount, "inventory amount");
     if (amountRaw === 0n) fail("INVALID_AMOUNT", "Token inventory reservations must be positive.");
+    if (expected.inventoryDebitRaw !== undefined && amountRaw < integer(expected.amountInRaw, "sell amount")) fail("INVALID_AMOUNT", "A sell cannot reserve less than it sells.");
     return { token: inventoryAddress(expected.token, "Inventory token"), actor: inventoryAddress(expected.actor, "Inventory actor"), amountRaw };
   }
   function verifiedTimedLock(actions, expected) {
@@ -517,7 +519,10 @@ export function createStore(stateDir, { budgetUsdcRaw = "10000000", mode = "loca
         record.launchActionId !== undefined || !/^\d+$/.test(record.observedBlockNumber ?? "")) {
       fail("PROJECT_UNVERIFIED", "An independently verified canonical launch receipt and current role snapshot are required.");
     }
-    for (const field of ["operator", "controller", "portal", "creatorRegistry", "hook", "escrow"]) inventoryAddress(record[field], field);
+    // Portals 1-7 have no registry or escrow; each line names its own launch parts.
+    const parts = { hooked: ["hook", "splitter", "locker"], legacy: ["pool", "processor", "locker"] }[record.line] ?? ["creatorRegistry", "hook", "escrow"];
+    if (record.line !== undefined && !["hooked", "legacy"].includes(record.line)) fail("PROJECT_UNVERIFIED", "The project line is not recognised.");
+    for (const field of ["operator", "controller", "portal", ...parts]) inventoryAddress(record[field], field);
     return transaction(() => {
       const previous = db.prepare("SELECT json FROM projects WHERE token = ? AND chain_id = ?").get(record.token.toLowerCase(), "5042");
       if (previous) {

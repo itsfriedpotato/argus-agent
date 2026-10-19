@@ -10,7 +10,7 @@ export async function runEntry(argv, { write = text => process.stdout.write(text
   const [command, ...args] = argv;
   let result;
   try {
-    if (!command || ['help', '--help', '-h'].includes(command)) result = { name: 'Argus for Agents', version: '0.1.0',
+    if (!command || ['help', '--help', '-h'].includes(command)) result = { name: 'Argus for Agents', version: '0.2.0',
       usage: ['argus-agent circle-setup [--home DIRECTORY]', 'argus-agent circle [--home DIRECTORY] CIRCLE_COMMAND [ARGUMENTS]',
         'argus-agent setup --controller HUMAN_WALLET --circle-wallet CIRCLE_WALLET [--home DIRECTORY] [--treasury human|circle] [--budget USDC]',
         'argus-agent doctor [--config FILE]', 'argus-agent enable-execution [--config FILE]', 'argus-agent disable-execution [--config FILE]',

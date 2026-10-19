@@ -3,6 +3,7 @@ import { encodeFunctionData, getAddress, zeroAddress } from "viem";
 import { timeLockAbi, MAX_LOCK_SECONDS } from "./generated/time-lock.mjs";
 import { lockVaultAbi, approvalFor } from "./generated/v5-lock.mjs";
 import { erc20Abi } from "./generated/abis.mjs";
+import { findLaunch } from "./lines.mjs";
 
 const bundle = JSON.parse(readFileSync(new URL("./vendor/argus-v4.json", import.meta.url), "utf8"));
 const portal = getAddress(bundle.launchPortal);
@@ -72,12 +73,13 @@ export function createLockAdapter(client, { timeLock, lockVault } = {}) {
   }
 
   async function approvals(input, deployment, read) {
+    // The vaults take any ERC-20. Membership is the rule, as on the site: one of our Portals launched it.
     const [launch, balance, allowance] = await Promise.all([
-      read(portal, portalAbi, "launches", [input.token]),
+      findLaunch(read, input.token),
       read(input.token, erc20Abi, "balanceOf", [input.actor]),
       read(input.token, erc20Abi, "allowance", [input.actor, deployment]),
     ]);
-    if (same(launch[0], zeroAddress)) fail("Only verified Portal8 launch tokens can be locked by this agent.", "UNSUPPORTED");
+    if (!launch) fail("Only tokens launched by an Argus Portal can be locked by this agent.", "UNSUPPORTED");
     if (balance < input.amountRaw) fail("The actor does not hold the requested token amount.", "INSUFFICIENT_BALANCE");
     const steps = [];
     if (approvalFor(allowance, input.amountRaw) !== null) {

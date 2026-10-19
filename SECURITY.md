@@ -6,6 +6,7 @@
 - **Spend cap.** Each workspace has a cumulative USDC budget, 10 USDC by default and 100 USDC at most, set once at `setup --budget`. The cap is accounting inside this app. It is not a limit your Circle wallet enforces, and sale proceeds do not refill it.
 - **Who signs.** Argus prepares and checks each call. The Circle CLI signs and sends it with your Circle Agent Wallet. Argus never sees a private key, and the package ships no credentials.
 - **Who controls fees.** Your own wallet controls creator fees. Setup refuses to make the Circle wallet the controller.
+- **Older tokens.** On Portals 1 to 7, a claim only sends calls anyone may send, and each pays the launch's own creator address. The Circle wallet pays the gas and receives nothing. Calls only the creator wallet may send are refused, never prepared.
 
 ## Keep your setup safe
 

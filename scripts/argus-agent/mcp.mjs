@@ -6,7 +6,7 @@ import { serveStdio, StdioServerTransport } from '@modelcontextprotocol/server/s
 import { json, loadConfiguredAgent, requestFailure } from './cli.mjs';
 
 export function createArgusMcpServer(agent) {
-  const server = new Server({ name: 'argus-agent', version: '0.1.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'argus-agent', version: '0.2.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler('tools/list', async () => ({ tools: agent.catalog }));
   server.setRequestHandler('tools/call', async request => {
     let result;
