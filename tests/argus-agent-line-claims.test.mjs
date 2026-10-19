@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
 import test from 'node:test';
 import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, encodeFunctionResult, getAddress, parseAbi } from 'viem';
 import { createContractAdapter } from '../scripts/argus-agent/contracts.mjs';
@@ -147,7 +148,7 @@ test('claim details report what one prepared claim would deliver now, or the exa
 test('both Circle executors reproduce every claim call from the ABI the step carries, and nothing else', async () => {
   const { circleArguments } = await import('../scripts/argus-agent/circle-executor.mjs');
   const { createCircleHostedExecutor } = await import('../scripts/argus-agent/circle-hosted-executor.mjs');
-  const hosted = createCircleHostedExecutor({ cliPath: 'C:/absent/cli.js', cliHome: 'C:/absent/home', accounts: [L.CIRCLE], authorize: async () => false,
+  const hosted = createCircleHostedExecutor({ cliPath: resolve('/absent/cli.js'), cliHome: resolve('/absent/home'), accounts: [L.CIRCLE], authorize: async () => false,
     run: async () => { throw new Error('No Circle process may start in this test'); } });
   const plans = [await claim(claimChain({ generation: 6, pending: 5n }).adapter), await claim(claimChain({ generation: 7, credited: 5n }).adapter),
     await claim(claimChain({ generation: 4, pending: 5n }).adapter), await claim(claimChain({ generation: 2, parked: 1n, bucket: 1n }).adapter)];
