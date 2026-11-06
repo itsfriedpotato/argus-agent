@@ -18,8 +18,9 @@ export const CIRCLE_SCA_DEPLOYMENT = Object.freeze({
   factoryCodeHash: '0xf3d358d970936e606d7df401fa6f37cde68302264655be0d9e4faaf9a9311a94',
   paymaster: '0x03df76c8c30a88f424cf3cbbc36a1ca02763103b',
   paymasterCodeHash: '0x5595d653276b5124f9b24ef9fe3845faa9ed213bb0db5db9bfbea3683ce0ecda',
-  paymasterImplementation: '0x36058cc257967db1912fc276f9cbec072cd572cb',
-  paymasterImplementationCodeHash: '0x54ebbe581338d0a38164aec38dbf8e67dd6c4712ec17327b08bc896789ef41a8',
+  // Paymaster implementation requalified at block 25132359 (same observation method).
+  paymasterImplementation: '0xb717f3b4c4d3aa40da1ee9c92f3d5e291bfd8d05',
+  paymasterImplementationCodeHash: '0x409780d9b5c6d83f4cb1c75f601731e11b7cb75d5038a296b916979fcb87d5a3',
 });
 const D = CIRCLE_SCA_DEPLOYMENT;
 const walletAbi = [...CIRCLE_BATCH_ABI, ...parseAbi([
